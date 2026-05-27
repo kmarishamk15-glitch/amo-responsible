@@ -56,7 +56,7 @@ app.post('/webhook', async (req, res) => {
         Получаем сделку
         */
 
-        const lead = req.body.leads?.status?.[0];
+        const lead = req.body.leads?.status?.[0] || req.body.leads?.update?.[0];
 
         if (!lead) {
 
