@@ -13,15 +13,24 @@ app.use(express.json());
 НАСТРОЙКА ВОРОНОК И ЭТАПОВ
 ========================================
 
-СЮДА вставляем ID воронок и этапов,
-где должна работать смена ответственного
+Формат:
+
+pipeline_id: [
+    status_id_1,
+    status_id_2
+]
 
 Пример:
 
-{
-   pipeline_id: [status_id_1, status_id_2]
-}
+1111111: [
+    2222222,
+    3333333
+]
 
+Где:
+1111111 — ID воронки
+2222222 — ID этапа
+3333333 — ID этапа
 */
 
 const ALLOWED = {
@@ -29,6 +38,12 @@ const ALLOWED = {
     8704562: [70510502, 76699590]
 
 };
+
+/*
+========================================
+ПРОВЕРКА ДЛЯ AMOCRM
+========================================
+*/
 
 app.get('/webhook', (req, res) => {
 
@@ -56,7 +71,9 @@ app.post('/webhook', async (req, res) => {
         Получаем сделку
         */
 
-        const lead = req.body.leads?.status?.[0] || req.body.leads?.update?.[0];
+        const lead =
+            req.body.leads?.status?.[0] ||
+            req.body.leads?.update?.[0];
 
         if (!lead) {
 
@@ -75,14 +92,26 @@ app.post('/webhook', async (req, res) => {
 
         const statusId = Number(lead.status_id);
 
-        const userId = Number(lead.modified_user_id);
+        const oldStatusId = Number(lead.old_status_id);
+
+        const userId = Number(
+            lead.modified_user_id ||
+            lead.modified_by ||
+            lead.updated_by ||
+            lead.created_user_id ||
+            lead.responsible_user_id
+        );
 
         console.log('Lead ID:', leadId);
         console.log('Pipeline ID:', pipelineId);
         console.log('Status ID:', statusId);
+        console.log('Old Status ID:', oldStatusId);
         console.log('User ID:', userId);
 
-        // Проверяем разрешенные воронки
+        /*
+        Проверяем воронку
+        */
+
         if (!ALLOWED[pipelineId]) {
 
             console.log('Pipeline not allowed');
@@ -90,7 +119,10 @@ app.post('/webhook', async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // Проверяем разрешенные этапы
+        /*
+        Проверяем этап
+        */
+
         if (!ALLOWED[pipelineId].includes(statusId)) {
 
             console.log('Status not allowed');
@@ -98,8 +130,47 @@ app.post('/webhook', async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // Меняем ответственного
-        await axios.patch(
+        /*
+        Проверяем, что этап реально изменился
+        */
+
+        if (statusId === oldStatusId) {
+
+            console.log('Status did not change');
+
+            return res.sendStatus(200);
+        }
+
+        /*
+        Проверяем пользователя
+        */
+
+        if (!userId) {
+
+            console.log('No user ID');
+
+            return res.sendStatus(200);
+        }
+
+        /*
+        Проверяем:
+        ответственный уже такой?
+        */
+
+        if (Number(lead.responsible_user_id) === userId) {
+
+            console.log('Responsible already correct');
+
+            return res.sendStatus(200);
+        }
+
+        /*
+        Меняем ответственного
+        */
+
+        console.log('Updating responsible user...');
+
+        const response = await axios.patch(
             `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
             {
                 responsible_user_id: userId
@@ -112,28 +183,53 @@ app.post('/webhook', async (req, res) => {
             }
         );
 
-        console.log('Responsible updated');
+        console.log('PATCH RESPONSE:');
+        console.log(response.data);
 
-        res.sendStatus(200);
+        console.log('Responsible updated successfully');
+
+        return res.sendStatus(200);
 
     } catch (error) {
 
-        console.error(
-            error.response?.data || error.message
-        );
+        console.log('ERROR');
 
-        res.sendStatus(500);
+        if (error.response) {
+
+            console.log(error.response.data);
+
+        } else {
+
+            console.log(error.message);
+
+        }
+
+        return res.sendStatus(500);
     }
 });
 
+/*
+========================================
+ГЛАВНАЯ СТРАНИЦА
+========================================
+*/
+
 app.get('/', (req, res) => {
 
-    res.send('Webhook server works');
+    res.send('AmoCRM webhook server works');
 
 });
 
-app.listen(process.env.PORT || 3000, () => {
+/*
+========================================
+ЗАПУСК СЕРВЕРА
+========================================
+*/
 
-    console.log('Server started');
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+
+    console.log(`Server started on port ${PORT}`);
 
 });
