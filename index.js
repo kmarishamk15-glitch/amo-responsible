@@ -30,30 +30,57 @@ const ALLOWED = {
 
 };
 
+app.get('/webhook', (req, res) => {
+
+    res.status(200).send('Webhook works');
+
+});
+
+/*
+========================================
+ОСНОВНОЙ WEBHOOK
+========================================
+*/
+
 app.post('/webhook', async (req, res) => {
 
     try {
 
+        console.log('======================');
+        console.log('NEW WEBHOOK');
+        console.log('======================');
+
         console.log(JSON.stringify(req.body, null, 2));
+
+        /*
+        Получаем сделку
+        */
 
         const lead = req.body.leads?.status?.[0];
 
         if (!lead) {
+
+            console.log('No lead data');
+
             return res.sendStatus(200);
         }
 
-        const leadId = lead.id;
+        /*
+        Получаем данные
+        */
+
+        const leadId = Number(lead.id);
 
         const pipelineId = Number(lead.pipeline_id);
 
         const statusId = Number(lead.status_id);
 
-        const userId = lead.modified_user_id;
+        const userId = Number(lead.modified_user_id);
 
-        console.log('Lead:', leadId);
-        console.log('Pipeline:', pipelineId);
-        console.log('Status:', statusId);
-        console.log('User:', userId);
+        console.log('Lead ID:', leadId);
+        console.log('Pipeline ID:', pipelineId);
+        console.log('Status ID:', statusId);
+        console.log('User ID:', userId);
 
         // Проверяем разрешенные воронки
         if (!ALLOWED[pipelineId]) {
