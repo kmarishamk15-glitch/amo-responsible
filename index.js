@@ -12,25 +12,6 @@ app.use(express.json());
 ========================================
 НАСТРОЙКА ВОРОНОК И ЭТАПОВ
 ========================================
-
-Формат:
-
-pipeline_id: [
-    status_id_1,
-    status_id_2
-]
-
-Пример:
-
-1111111: [
-    2222222,
-    3333333
-]
-
-Где:
-1111111 — ID воронки
-2222222 — ID этапа
-3333333 — ID этапа
 */
 
 const ALLOWED = {
@@ -41,7 +22,17 @@ const ALLOWED = {
 
 /*
 ========================================
-ПРОВЕРКА ДЛЯ AMOCRM
+АНТИ-ЗАЦИКЛИВАНИЕ
+========================================
+
+Храним сделки, которые недавно обработали
+*/
+
+const recentUpdates = new Map();
+
+/*
+========================================
+GET /webhook
 ========================================
 */
 
@@ -53,7 +44,7 @@ app.get('/webhook', (req, res) => {
 
 /*
 ========================================
-ОСНОВНОЙ WEBHOOK
+POST /webhook
 ========================================
 */
 
@@ -77,13 +68,13 @@ app.post('/webhook', async (req, res) => {
 
         if (!lead) {
 
-            console.log('No lead data');
+            console.log('No lead');
 
             return res.sendStatus(200);
         }
 
         /*
-        Получаем данные
+        Данные
         */
 
         const leadId = Number(lead.id);
@@ -92,20 +83,16 @@ app.post('/webhook', async (req, res) => {
 
         const statusId = Number(lead.status_id);
 
-        const oldStatusId = Number(lead.old_status_id);
-
         const userId = Number(
             lead.modified_user_id ||
             lead.modified_by ||
             lead.updated_by ||
-            lead.created_user_id ||
-            lead.responsible_user_id
+            lead.created_user_id
         );
 
         console.log('Lead ID:', leadId);
         console.log('Pipeline ID:', pipelineId);
         console.log('Status ID:', statusId);
-        console.log('Old Status ID:', oldStatusId);
         console.log('User ID:', userId);
 
         /*
@@ -131,46 +118,42 @@ app.post('/webhook', async (req, res) => {
         }
 
         /*
-        Проверяем, что этап реально изменился
-        */
-
-        if (statusId === oldStatusId) {
-
-            console.log('Status did not change');
-
-            return res.sendStatus(200);
-        }
-
-        /*
         Проверяем пользователя
         */
 
         if (!userId) {
 
-            console.log('No user ID');
+            console.log('No user');
 
             return res.sendStatus(200);
         }
 
         /*
-        Проверяем:
-        ответственный уже такой?
+        Проверяем зацикливание
         */
 
-        if (Number(lead.responsible_user_id) === userId) {
+        const lastUpdate = recentUpdates.get(leadId);
 
-            console.log('Responsible already correct');
+        if (lastUpdate && Date.now() - lastUpdate < 5000) {
+
+            console.log('Loop prevented');
 
             return res.sendStatus(200);
         }
+
+        /*
+        Запоминаем обработку
+        */
+
+        recentUpdates.set(leadId, Date.now());
 
         /*
         Меняем ответственного
         */
 
-        console.log('Updating responsible user...');
+        console.log('Updating responsible...');
 
-        const response = await axios.patch(
+        await axios.patch(
             `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
             {
                 responsible_user_id: userId
@@ -183,10 +166,17 @@ app.post('/webhook', async (req, res) => {
             }
         );
 
-        console.log('PATCH RESPONSE:');
-        console.log(response.data);
+        console.log('Responsible updated');
 
-        console.log('Responsible updated successfully');
+        /*
+        Удаляем запись через 10 секунд
+        */
+
+        setTimeout(() => {
+
+            recentUpdates.delete(leadId);
+
+        }, 10000);
 
         return res.sendStatus(200);
 
@@ -222,7 +212,7 @@ app.get('/', (req, res) => {
 
 /*
 ========================================
-ЗАПУСК СЕРВЕРА
+ЗАПУСК
 ========================================
 */
 
