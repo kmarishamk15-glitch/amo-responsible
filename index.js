@@ -10,225 +10,291 @@ app.use(express.json());
 
 /*
 ========================================
-🔧 НАСТРОЙКА: Правила переходов
+🔧 ПРАВИЛА ПЕРЕХОДОВ
 ========================================
 
-Формат правила:
+Логика:
+
+ЕСЛИ сделка перенесена:
+
+ИЗ:
+- определенной воронки
+- определенного этапа
+
+В:
+- определенную воронку
+- один из определенных этапов
+
+ТО:
+→ меняем ответственного
+на того, кто передвинул сделку
+
+========================================
+КАК ДОБАВЛЯТЬ ПРАВИЛА
+========================================
+
 {
-    from: { 
-        pipeline: ID_воронки_ОТКУДА, 
-        status: ID_этапа_ИЛИ_МАССИВ_ЭТАПОВ 
+    from: {
+        pipeline: ID_ВОРОНКИ_ИЗ,
+        status: ID_ЭТАПА_ИЗ
     },
-    to: { 
-        pipeline: ID_воронки_КУДА, 
-        status: ID_этапа_ИЛИ_МАССИВ_ЭТАПОВ 
+
+    to: {
+        pipeline: ID_ВОРОНКИ_КУДА,
+        status: [
+            ID_ЭТАПА_1,
+            ID_ЭТАПА_2
+        ]
     }
 }
 
-Поддерживается:
-• Одно число: status: 76699590
-• Массив чисел: status: [76699590, 76699591, 76699592]
-• Звёздочка: status: "*" (любой этап)
 */
 
-const TRANSITIONS = [
-    // 🔹 Пример 1: Конкретный переход (один этап → один этап)
-   // {
-       // from: { pipeline: 8704562, status: 76699590 },
-       // to:   { pipeline: 8704562, status: 76699591 }
-    //},
+const RULES = [
 
-    // 🔹 Пример 2: МНОГО этапов "ОТКУДА" → один этап "КУДА"
-    // Сработает, если сделка ушла с ЛЮБОГО из указанных этапов
     {
-        from: { 
-            pipeline: 5240944, 
-            status: 47069740// ← Массив этапов через запятую
+        from: {
+            pipeline: 5240944,
+            status: 47069740
         },
-        to: { 
-            pipeline: 5232979, 
-            status: [ 46748074, 46748077, 70374490, 46748080, 143 ] // ← Конкретный этап назначения
+
+        to: {
+            pipeline: 5232979,
+            status: [
+                46748074,
+                46748077,
+                70374490,
+                46748080,
+                143
+            ]
         }
-    },
+    }
 
-    // 🔹 Пример 3: Один этап "ОТКУДА" → МНОГО этапов "КУДА"
-    // {
-    //     from: { pipeline: 8704562, status: 76699590 },
-    //     to:   { pipeline: 8704562, status: [76699591, 76699593, 76699599] }
-    // },
-
-    // 🔹 Пример 4: МНОГО → МНОГО
-    // {
-    //     from: { pipeline: 8704562, status: [100, 101, 102] },
-    //     to:   { pipeline: 8704562, status: [200, 201, 202] }
-    // },
-
-    // 🔹 Пример 5: Звёздочка + массив
-    // {
-    //     from: { pipeline: 8704562, status: "*" },  // Любой этап
-    //     to:   { pipeline: 8704562, status: [76699591, 76699592] }  // Только в эти
-    // }
 ];
 
 /*
 ========================================
-🔍 Функция: Проверка значения (число, массив или "*")
-========================================
-*/
-function matchesValue(configValue, actualValue) {
-    // Звёздочка = подходит всё
-    if (configValue === "*") return true;
-    
-    // Массив = проверяем, есть ли значение в списке
-    if (Array.isArray(configValue)) return configValue.includes(actualValue);
-    
-    // Число = точное совпадение
-    return configValue === actualValue;
-}
-
-/*
-========================================
-🔍 Функция: Проверка, соответствует ли переход правилу
-========================================
-*/
-function isTransitionAllowed(oldPipeline, oldStatus, newPipeline, newStatus) {
-    for (const rule of TRANSITIONS) {
-        const fromPipelineMatch = matchesValue(rule.from.pipeline, oldPipeline);
-        const fromStatusMatch = matchesValue(rule.from.status, oldStatus);
-        const toPipelineMatch = matchesValue(rule.to.pipeline, newPipeline);
-        const toStatusMatch = matchesValue(rule.to.status, newStatus);
-        
-        if (fromPipelineMatch && fromStatusMatch && toPipelineMatch && toStatusMatch) {
-            return true; // Нашли подходящее правило
-        }
-    }
-    return false; // Ни одно правило не подошло
-}
-
-/*
-========================================
-🌐 ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+🌐 Проверка работы
 ========================================
 */
 
 app.get('/webhook', (req, res) => {
+
     res.status(200).send('Webhook works');
+
 });
 
 app.get('/', (req, res) => {
+
     res.status(200).send('AmoCRM Bot is running');
+
 });
 
 /*
 ========================================
-📥 ОСНОВНОЙ ОБРАБОТЧИК ВЕБХУКА
+📥 WEBHOOK
 ========================================
 */
 
 app.post('/webhook', async (req, res) => {
+
     try {
+
         console.log('======================');
-        console.log('📥 NEW WEBHOOK RECEIVED');
+        console.log('📥 NEW WEBHOOK');
         console.log('======================');
-        console.log('Event type:', req.body.leads?.status ? 'STATUS_CHANGE' : 'UNKNOWN');
+
+        console.log(JSON.stringify(req.body, null, 2));
 
         /*
-        🔑 Слушаем ТОЛЬКО смену этапа
+        Берем ТОЛЬКО событие смены этапа
         */
+
         const lead = req.body.leads?.status?.[0];
 
+        /*
+        Не смена этапа?
+        Игнорируем
+        */
+
         if (!lead) {
-            console.log('⏭️ Not a status change event, ignoring');
+
+            console.log('⏭️ Not a status event');
+
             return res.sendStatus(200);
         }
 
         /*
-        Извлекаем данные
+        Данные сделки
         */
+
         const leadId = Number(lead.id);
-        const oldPipelineId = Number(lead.pipeline_id);
-        const oldStatusId = Number(lead.old_status_id);
-        const newPipelineId = Number(lead.pipeline_id);
+
+        const pipelineId = Number(lead.pipeline_id);
+
         const newStatusId = Number(lead.status_id);
 
+        const oldStatusId = Number(lead.old_status_id);
+
+        /*
+        Иногда amoCRM не присылает old_pipeline_id.
+        Поэтому можно указать fallback.
+        */
+
+        const oldPipelineId = Number(
+            lead.old_pipeline_id || 5240944
+        );
+
+        /*
+        Кто передвинул сделку
+        */
+
         const userId = Number(
-            lead.modified_user_id || 
-            lead.modified_by || 
+            lead.modified_user_id ||
+            lead.modified_by ||
             lead.updated_by
         );
 
-        const currentResponsible = Number(lead.responsible_user_id);
+        /*
+        Текущий ответственный
+        */
 
-        console.log(`📊 Deal ${leadId}: ${oldPipelineId}:${oldStatusId} → ${newPipelineId}:${newStatusId} | By: ${userId}`);
+        const currentResponsible = Number(
+            lead.responsible_user_id
+        );
+
+        console.log('Lead ID:', leadId);
+        console.log('Old Pipeline:', oldPipelineId);
+        console.log('Old Status:', oldStatusId);
+        console.log('New Pipeline:', pipelineId);
+        console.log('New Status:', newStatusId);
+        console.log('User ID:', userId);
 
         /*
-        Проверка 1: Соответствует ли переход настроенным правилам?
+        Проверяем:
+        этап реально изменился?
         */
-        if (!isTransitionAllowed(oldPipelineId, oldStatusId, newPipelineId, newStatusId)) {
-            console.log('🚫 Transition does not match any rule');
+
+        if (!oldStatusId) {
+
+            console.log('⏭️ No old status');
+
             return res.sendStatus(200);
         }
-        console.log('✅ Transition matches configured rule');
 
-        /*
-        Проверка 2: Этап действительно изменился?
-        */
-        if (!oldStatusId || newStatusId === oldStatusId) {
-            console.log('⏭️ Status did not change, ignoring');
+        if (oldStatusId === newStatusId) {
+
+            console.log('⏭️ Same status');
+
             return res.sendStatus(200);
         }
 
         /*
-        Проверка 3: Есть ли пользователь?
+        Ищем подходящее правило
         */
+
+        const matchedRule = RULES.find(rule => {
+
+            const fromMatches =
+                rule.from.pipeline === oldPipelineId &&
+                rule.from.status === oldStatusId;
+
+            const toMatches =
+                rule.to.pipeline === pipelineId &&
+                rule.to.status.includes(newStatusId);
+
+            return fromMatches && toMatches;
+
+        });
+
+        /*
+        Нет подходящего правила
+        */
+
+        if (!matchedRule) {
+
+            console.log('⏭️ No matching rule');
+
+            return res.sendStatus(200);
+        }
+
+        /*
+        Нет пользователя?
+        */
+
         if (!userId) {
-            console.log('⏭️ No user ID found, ignoring');
+
+            console.log('⏭️ No user ID');
+
             return res.sendStatus(200);
         }
 
         /*
-        Проверка 4: Защита от зацикливания
+        Уже нужный ответственный?
         */
+
         if (currentResponsible === userId) {
-            console.log('⏭️ Responsible already correct, skipping');
+
+            console.log('⏭️ Responsible already correct');
+
             return res.sendStatus(200);
         }
 
         /*
-        🎯 ВСЁ ОК — меняем ответственного
+        Меняем ответственного
         */
-        console.log(`✅ Updating responsible: ${currentResponsible} → ${userId}`);
+
+        console.log(
+            `✅ Updating responsible: ${currentResponsible} → ${userId}`
+        );
 
         await axios.patch(
             `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
-            { responsible_user_id: userId },
+            {
+                responsible_user_id: userId
+            },
             {
                 headers: {
-                    'Authorization': `Bearer ${process.env.AMO_TOKEN}`,
+                    Authorization: `Bearer ${process.env.AMO_TOKEN}`,
                     'Content-Type': 'application/json',
-                    'Accept': 'application/json'
+                    Accept: 'application/json'
                 }
             }
         );
 
-        console.log('✅ Responsible updated successfully');
+        console.log('✅ Responsible updated');
+
         return res.sendStatus(200);
 
     } catch (error) {
-        console.log('❌ ERROR:', error.message);
-        if (error.response?.data) console.log('API Error:', JSON.stringify(error.response.data));
+
+        console.log('❌ ERROR');
+
+        if (error.response) {
+
+            console.log('Status:', error.response.status);
+            console.log('Data:', error.response.data);
+
+        } else {
+
+            console.log(error.message);
+
+        }
+
         return res.sendStatus(500);
     }
 });
 
 /*
 ========================================
-🚀 ЗАПУСК СЕРВЕРА
+🚀 СТАРТ СЕРВЕРА
 ========================================
 */
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
+
     console.log(`🚀 Server started on port ${PORT}`);
+
 });
