@@ -303,28 +303,6 @@ app.post('/webhook', async (req, res) => {
 
         console.log('✅ Responsible updated');
 
-        /*
-        МЕНЯЕМ ДАТУ СОЗДАНИЯ СДЕЛКИ НА СЕГОДНЯ
-        */
-
-        const now = Math.floor(Date.now() / 1000); // Текущая дата в Unix timestamp
-
-        await axios.patch(
-            `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
-            {
-                created_at: now
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${process.env.AMO_TOKEN}`,
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json'
-                }
-            }
-        );
-
-        console.log('✅ Creation date updated to today');
-
         return res.sendStatus(200);
 
     } catch (error) {
@@ -357,5 +335,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
 
     console.log(`🚀 Server started on port ${PORT}`);
-
-});
