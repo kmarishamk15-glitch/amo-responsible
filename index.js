@@ -288,10 +288,13 @@ app.post('/webhook', async (req, res) => {
         );
 
         await axios.patch(
-            `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
-            {
-                responsible_user_id: userId
-            },
+            `https://${process.env.AMO_DOMAIN}/api/v4/leads`,
+            [
+                {
+                    id: leadId,
+                    responsible_user_id: userId
+                }
+            ],
             {
                 headers: {
                     Authorization: `Bearer ${process.env.AMO_TOKEN}`,
@@ -300,7 +303,6 @@ app.post('/webhook', async (req, res) => {
                 }
             }
         );
-
         console.log('✅ Responsible updated');
 
         return res.sendStatus(200);
