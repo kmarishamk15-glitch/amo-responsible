@@ -287,21 +287,20 @@ app.post('/webhook', async (req, res) => {
             `✅ Updating responsible: ${currentResponsible} → ${userId}`
         );
 
-        await axios({
-            method: 'PATCH',
-            url: `https://${process.env.AMO_DOMAIN}/api/v4/leads`,
-            headers: {
-                Authorization: `Bearer ${process.env.AMO_TOKEN}`,
-                'Content-Type': 'application/json',
-                Accept: 'application/json'
+        await axios.patch(
+            `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+            {
+                responsible_user_id: userId
             },
-            data: [
-                {
-                    id: leadId,
-                    responsible_user_id: userId
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.AMO_TOKEN}`,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
                 }
-            ]
-        });
+            }
+        );
+
         console.log('✅ Responsible updated');
 
         return res.sendStatus(200);
@@ -336,4 +335,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
 
     console.log(`🚀 Server started on port ${PORT}`);
-}); 
+
+});
