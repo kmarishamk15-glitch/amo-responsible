@@ -288,7 +288,7 @@ app.post('/webhook', async (req, res) => {
         );
 
         await axios.patch(
-            `https://${process.env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+            `https://${process.env.AMO_SUBDOMAIN}/api/v4/leads/${leadId}`,
             {
                 responsible_user_id: userId
             },
