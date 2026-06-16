@@ -61,27 +61,29 @@ export default {
                 console.log('📥 NEW WEBHOOK');
                 console.log('======================');
 
-                // Определяем формат данных
+                // Читаем тело ТОЛЬКО ОДИН РАЗ
                 const contentType = request.headers.get('content-type') || '';
                 let body;
                 
                 if (contentType.includes('application/json')) {
                     body = await request.json();
-                } else {
-                    // amoCRM часто отправляет form-data
+                } else if (contentType.includes('multipart/form-data') || 
+                           contentType.includes('application/x-www-form-urlencoded')) {
                     const formData = await request.formData();
                     const leadsData = formData.get('leads');
-                    
-                    if (leadsData) {
-                        body = JSON.parse(leadsData);
-                    } else {
-                        // Пробуем распарсить как URL-encoded
-                        const urlEncoded = new URLSearchParams(await request.text());
+                    body = leadsData ? JSON.parse(leadsData) : {};
+                } else {
+                    // Попробуем как текст
+                    const text = await request.text();
+                    try {
+                        body = JSON.parse(text);
+                    } catch {
+                        const urlEncoded = new URLSearchParams(text);
                         const leadsStr = urlEncoded.get('leads');
                         body = leadsStr ? JSON.parse(leadsStr) : {};
                     }
                 }
-                
+
                 console.log(JSON.stringify(body, null, 2));
 
                 /*
