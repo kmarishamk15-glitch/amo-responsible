@@ -15,27 +15,51 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    console.log("🔥 ENTRY HIT", request.method, url.pathname);
+    console.log("======================");
+    console.log("🔥 WORKER START");
+    console.log("URL:", request.url);
+    console.log("METHOD:", request.method);
+    console.log("PATH:", url.pathname);
+    console.log("======================");
 
-    // только webhook
-    if (request.method !== "POST" || !url.pathname.startsWith("/webhook")) {
+    // health check
+    if (request.method === "GET") {
+      return new Response("Webhook works");
+    }
+
+    if (request.method !== "POST") {
       return new Response("OK");
     }
 
     try {
+      console.log("📥 WEBHOOK RECEIVED");
+
+      // 🔴 ENV CHECK (ВАЖНО)
+      console.log("ENV:", {
+        AMO_DOMAIN: env?.AMO_DOMAIN,
+        AMO_TOKEN: env?.AMO_TOKEN ? "SET" : "NOT SET"
+      });
+
+      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) {
+        console.log("❌ ENV NOT SET");
+        return new Response("ENV ERROR");
+      }
+
       const rawBody = await request.text();
+      console.log("RAW BODY:", rawBody);
+
       const params = new URLSearchParams(rawBody);
 
       const leadId = Number(params.get("leads[update][0][id]"));
 
-      console.log("📥 Lead ID:", leadId);
+      console.log("Lead ID:", leadId);
 
       if (!leadId) {
-        console.log("❌ no leadId");
+        console.log("❌ NO LEAD ID");
         return new Response("OK");
       }
 
-      // 🔥 ВСЕГДА БЕРЁМ АКТУАЛЬНЫЕ ДАННЫЕ ИЗ AMO
+      // 🔥 получаем актуальные данные из amoCRM
       const leadRes = await fetch(
         `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
         {
@@ -47,7 +71,7 @@ export default {
       );
 
       if (!leadRes.ok) {
-        console.log("❌ Amo API error:", await leadRes.text());
+        console.log("❌ AMO API ERROR:", await leadRes.text());
         return new Response("OK");
       }
 
@@ -57,7 +81,7 @@ export default {
       const statusId = lead.status_id;
       const responsibleId = lead.responsible_user_id;
 
-      console.log("📊 Lead data:", {
+      console.log("📊 LEAD DATA:", {
         pipelineId,
         statusId,
         responsibleId
@@ -66,24 +90,22 @@ export default {
       // ищем правило
       const rule = RULES.find(r =>
         r.from.pipeline === pipelineId &&
-        r.from.status === statusId &&
-        r.to.pipeline === pipelineId // если переход внутри или между — расширим позже
+        r.from.status === statusId
       );
 
       if (!rule) {
-        console.log("⏭️ no rule match");
+        console.log("⏭️ NO RULE MATCH");
         return new Response("OK");
       }
 
-      // выбираем нового ответственного (пример: берём первого из списка)
       const newResponsible = rule.to.status[0];
 
       if (responsibleId === newResponsible) {
-        console.log("⏭️ already correct responsible");
+        console.log("⏭️ ALREADY CORRECT");
         return new Response("OK");
       }
 
-      console.log(`✅ UPDATE responsible ${responsibleId} → ${newResponsible}`);
+      console.log(`✅ UPDATE: ${responsibleId} → ${newResponsible}`);
 
       const updateRes = await fetch(
         `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
@@ -100,15 +122,16 @@ export default {
       );
 
       if (!updateRes.ok) {
-        console.log("❌ update error:", await updateRes.text());
+        console.log("❌ UPDATE ERROR:", await updateRes.text());
       } else {
-        console.log("✅ updated successfully");
+        console.log("✅ SUCCESS UPDATE");
       }
 
       return new Response("OK");
+
     } catch (e) {
-      console.log("❌ ERROR:", e.message);
-      return new Response("ERROR", { status: 500 });
+      console.log("💥 CRASH:", e.stack || e.message);
+      return new Response("ERROR");
     }
   }
 };
