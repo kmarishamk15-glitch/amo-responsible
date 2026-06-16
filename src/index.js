@@ -11,6 +11,7 @@ export default {
     console.log('======================');
 
     // GET check
+    
     if (request.method === 'GET') {
       return new Response('Webhook works', { status: 200 });
     }
