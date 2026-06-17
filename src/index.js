@@ -25,12 +25,6 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    console.log("======================");
-    console.log("🔥 WORKER START");
-    console.log("URL:", request.url);
-    console.log("METHOD:", request.method);
-    console.log("======================");
-
     if (request.method === "GET") {
       return new Response("Webhook works");
     }
@@ -40,87 +34,81 @@ export default {
     }
 
     try {
-      console.log("📥 WEBHOOK RECEIVED");
-
-      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) {
-        console.log("❌ ENV NOT SET");
-        return new Response("ENV ERROR");
-      }
-
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
-      // Пробуем оба формата: leads[status][0] и leads[update][0]
-      let leadId, oldPipelineId, oldStatusId, pipelineId, statusId, responsibleId, modifiedUserId;
+      console.log("======================");
+      console.log("📥 WEBHOOK RECEIVED");
+      console.log("Has leads[status][0][id]:", params.has("leads[status][0][id]"));
+      console.log("Has leads[update][0][id]:", params.has("leads[update][0][id]"));
+      console.log("======================");
 
-      // Формат 1: leads[status][0] (событие смены этапа)
-      if (params.has("leads[status][0][id]")) {
-        console.log("📋 Event type: STATUS CHANGE");
-        leadId = Number(params.get("leads[status][0][id]"));
-        oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
-        oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-        pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
-        statusId = Number(params.get("leads[status][0][status_id]"));
-        responsibleId = Number(params.get("leads[status][0][responsible_user_id]"));
-        modifiedUserId = Number(params.get("leads[status][0][modified_user_id]"));
-      }
-      // Формат 2: leads[update][0] (событие обновления)
-      else if (params.has("leads[update][0][id]")) {
-        console.log("📋 Event type: UPDATE");
-        leadId = Number(params.get("leads[update][0][id]"));
-        oldPipelineId = Number(params.get("leads[update][0][old_pipeline_id]")) || 5240944;
-        oldStatusId = Number(params.get("leads[update][0][old_status_id]"));
-        pipelineId = Number(params.get("leads[update][0][pipeline_id]"));
-        statusId = Number(params.get("leads[update][0][status_id]"));
-        responsibleId = Number(params.get("leads[update][0][responsible_user_id]"));
-        modifiedUserId = Number(params.get("leads[update][0][modified_user_id]"));
-      } else {
-        console.log("❌ NO LEAD DATA");
+      // 🔴 ВАЖНО: Работаем ТОЛЬКО с событиями смены этапа
+      // leads[status][0] = смена этапа
+      // leads[update][0] = обновление полей (игнорируем!)
+      
+      if (!params.has("leads[status][0][id]")) {
+        console.log("⏭️ NOT A STATUS CHANGE - IGNORING (this is manual update)");
         return new Response("OK");
       }
 
+      const leadId = Number(params.get("leads[status][0][id]"));
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+      const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
+      const newPipelineId = Number(params.get("leads[status][0][pipeline_id]"));
+      const newStatusId = Number(params.get("leads[status][0][status_id]"));
+      const responsibleId = Number(params.get("leads[status][0][responsible_user_id]"));
+      const modifiedUserId = Number(params.get("leads[status][0][modified_user_id]"));
+
+      console.log("📊 LEAD DATA:");
       console.log("Lead ID:", leadId);
-      console.log("Old Pipeline:", oldPipelineId);
-      console.log("Old Status:", oldStatusId);
-      console.log("New Pipeline:", pipelineId);
-      console.log("New Status:", statusId);
-      console.log("Modified User ID:", modifiedUserId);
-      console.log("Responsible User ID:", responsibleId);
+      console.log("FROM: Pipeline", oldPipelineId, "Status", oldStatusId);
+      console.log("TO: Pipeline", newPipelineId, "Status", newStatusId);
+      console.log("Modified by:", modifiedUserId);
+      console.log("Current responsible:", responsibleId);
 
-      if (!leadId) {
-        console.log("❌ NO LEAD ID");
+      // Проверяем, что этап реально изменился
+      if (!oldStatusId || oldStatusId === newStatusId) {
+        console.log("⏭️ Status did not change - ignoring");
         return new Response("OK");
       }
 
-      // Ищем правило: ИЗ старой воронки/статуса В новую воронку/статус
-      const rule = RULES.find(r =>
-        r.from.pipeline === oldPipelineId &&
-        r.from.status === oldStatusId &&
-        r.to.pipeline === pipelineId &&
-        r.to.status.includes(statusId)
-      );
+      // Ищем подходящее правило
+      const matchedRule = RULES.find(rule => {
+        const fromMatches = 
+          rule.from.pipeline === oldPipelineId && 
+          rule.from.status === oldStatusId;
+        
+        const toMatches = 
+          rule.to.pipeline === newPipelineId && 
+          rule.to.status.includes(newStatusId);
 
-      if (!rule) {
-        console.log("⏭️ NO RULE MATCH");
+        return fromMatches && toMatches;
+      });
+
+      if (!matchedRule) {
+        console.log("⏭️ No matching rule - ignoring");
+        console.log("Checked FROM:", oldPipelineId, oldStatusId);
+        console.log("Checked TO:", newPipelineId, newStatusId);
         return new Response("OK");
       }
 
       console.log("✅ RULE MATCHED!");
 
-      // Новый ответственный = тот, кто передвинул сделку
-      const newResponsible = modifiedUserId;
-
-      if (!newResponsible) {
-        console.log("❌ NO MODIFIED USER ID");
+      // Если modified_user_id = 0 или отсутствует, не меняем
+      if (!modifiedUserId || modifiedUserId === 0) {
+        console.log("⏭️ No modified user - ignoring (manual change allowed)");
         return new Response("OK");
       }
 
-      if (responsibleId === newResponsible) {
-        console.log("⏭️ ALREADY CORRECT");
+      // Если ответственный уже тот, кто передвинул - не меняем
+      if (responsibleId === modifiedUserId) {
+        console.log("⏭️ Responsible already correct");
         return new Response("OK");
       }
 
-      console.log(`✅ UPDATE RESPONSIBLE: ${responsibleId} → ${newResponsible}`);
+      // МЕНЯЕМ ответственного на того, кто передвинул сделку
+      console.log(`🔄 CHANGE RESPONSIBLE: ${responsibleId} → ${modifiedUserId}`);
 
       const updateRes = await fetch(
         `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
@@ -132,22 +120,22 @@ export default {
             Accept: "application/json"
           },
           body: JSON.stringify({
-            responsible_user_id: newResponsible
+            responsible_user_id: modifiedUserId
           })
         }
       );
 
       if (!updateRes.ok) {
         console.log("❌ UPDATE ERROR:", await updateRes.text());
-      } else {
-        console.log("✅ SUCCESS UPDATE");
+        return new Response("ERROR", { status: 500 });
       }
 
+      console.log("✅ SUCCESS! Responsible updated");
       return new Response("OK");
 
     } catch (e) {
       console.log("💥 CRASH:", e.stack || e.message);
-      return new Response("ERROR");
+      return new Response("ERROR", { status: 500 });
     }
   }
 };
