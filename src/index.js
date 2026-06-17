@@ -50,77 +50,86 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
-      // Пробуем оба формата: leads[status][0] и leads[update][0]
-      let leadId, oldPipelineId, oldStatusId, pipelineId, statusId, responsibleId, modifiedUserId;
-
-      // Формат 1: leads[status][0] (событие смены этапа)
-      if (params.has("leads[status][0][id]")) {
-        console.log("📋 Event type: STATUS CHANGE");
-        leadId = Number(params.get("leads[status][0][id]"));
-        oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
-        oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-        pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
-        statusId = Number(params.get("leads[status][0][status_id]"));
-        responsibleId = Number(params.get("leads[status][0][responsible_user_id]"));
-        modifiedUserId = Number(params.get("leads[status][0][modified_user_id]"));
-      }
-      // Формат 2: leads[update][0] (событие обновления)
-      else if (params.has("leads[update][0][id]")) {
-        console.log("📋 Event type: UPDATE");
-        leadId = Number(params.get("leads[update][0][id]"));
-        oldPipelineId = Number(params.get("leads[update][0][old_pipeline_id]")) || 5240944;
-        oldStatusId = Number(params.get("leads[update][0][old_status_id]"));
-        pipelineId = Number(params.get("leads[update][0][pipeline_id]"));
-        statusId = Number(params.get("leads[update][0][status_id]"));
-        responsibleId = Number(params.get("leads[update][0][responsible_user_id]"));
-        modifiedUserId = Number(params.get("leads[update][0][modified_user_id]"));
-      } else {
-        console.log("❌ NO LEAD DATA");
+      // 🔴 ВАЖНО: Работаем ТОЛЬКО с событиями смены этапа
+      // leads[status][0] = смена этапа (как в старом коде)
+      // leads[update][0] = обновление полей (ИГНОРИРУЕМ!)
+      
+      if (!params.has("leads[status][0][id]")) {
+        console.log("⏭️ Not a status event - IGNORING");
         return new Response("OK");
       }
+
+      console.log("📋 Event type: STATUS CHANGE");
+
+      // Данные сделки (как в старом коде)
+      const leadId = Number(params.get("leads[status][0][id]"));
+      const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
+      const newStatusId = Number(params.get("leads[status][0][status_id]"));
+      const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+      
+      const userId = Number(
+        params.get("leads[status][0][modified_user_id]") ||
+        params.get("leads[status][0][modified_by]") ||
+        params.get("leads[status][0][updated_by]")
+      );
+      
+      const currentResponsible = Number(params.get("leads[status][0][responsible_user_id]"));
 
       console.log("Lead ID:", leadId);
       console.log("Old Pipeline:", oldPipelineId);
       console.log("Old Status:", oldStatusId);
       console.log("New Pipeline:", pipelineId);
-      console.log("New Status:", statusId);
-      console.log("Modified User ID:", modifiedUserId);
-      console.log("Responsible User ID:", responsibleId);
+      console.log("New Status:", newStatusId);
+      console.log("User ID:", userId);
+      console.log("Current Responsible:", currentResponsible);
 
-      if (!leadId) {
-        console.log("❌ NO LEAD ID");
+      // Проверяем: этап реально изменился?
+      if (!oldStatusId) {
+        console.log("⏭️ No old status");
         return new Response("OK");
       }
 
-      // Ищем правило: ИЗ старой воронки/статуса В новую воронку/статус
-      const rule = RULES.find(r =>
-        r.from.pipeline === oldPipelineId &&
-        r.from.status === oldStatusId &&
-        r.to.pipeline === pipelineId &&
-        r.to.status.includes(statusId)
-      );
+      if (oldStatusId === newStatusId) {
+        console.log("⏭️ Same status");
+        return new Response("OK");
+      }
 
-      if (!rule) {
-        console.log("⏭️ NO RULE MATCH");
+      // Ищем подходящее правило
+      const matchedRule = RULES.find(rule => {
+        const fromMatches =
+          rule.from.pipeline === oldPipelineId &&
+          rule.from.status === oldStatusId;
+
+        const toMatches =
+          rule.to.pipeline === pipelineId &&
+          rule.to.status.includes(newStatusId);
+
+        return fromMatches && toMatches;
+      });
+
+      // Нет подходящего правила
+      if (!matchedRule) {
+        console.log("⏭️ No matching rule");
         return new Response("OK");
       }
 
       console.log("✅ RULE MATCHED!");
 
-      // Новый ответственный = тот, кто передвинул сделку
-      const newResponsible = modifiedUserId;
-
-      if (!newResponsible) {
-        console.log("❌ NO MODIFIED USER ID");
+      // Нет пользователя?
+      if (!userId) {
+        console.log("⏭️ No user ID");
         return new Response("OK");
       }
 
-      if (responsibleId === newResponsible) {
-        console.log("⏭️ ALREADY CORRECT");
+      // Уже нужный ответственный?
+      if (currentResponsible === userId) {
+        console.log("⏭️ Responsible already correct");
         return new Response("OK");
       }
 
-      console.log(`✅ UPDATE RESPONSIBLE: ${responsibleId} → ${newResponsible}`);
+      // Меняем ответственного
+      console.log(`✅ Updating responsible: ${currentResponsible} → ${userId}`);
 
       const updateRes = await fetch(
         `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
@@ -132,22 +141,22 @@ export default {
             Accept: "application/json"
           },
           body: JSON.stringify({
-            responsible_user_id: newResponsible
+            responsible_user_id: userId
           })
         }
       );
 
       if (!updateRes.ok) {
         console.log("❌ UPDATE ERROR:", await updateRes.text());
-      } else {
-        console.log("✅ SUCCESS UPDATE");
+        return new Response("ERROR", { status: 500 });
       }
 
+      console.log("✅ Responsible updated");
       return new Response("OK");
 
     } catch (e) {
       console.log("💥 CRASH:", e.stack || e.message);
-      return new Response("ERROR");
+      return new Response("ERROR", { status: 500 });
     }
   }
 };
