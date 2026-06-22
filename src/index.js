@@ -51,6 +51,193 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
+      // =========================
+// КАТЕГОРИЯ ТОВАРА
+// =========================
+
+    if (params.has("leads[update][0][id]")) {
+    
+      console.log("📦 CATEGORY CHECK");
+    
+      const leadId = Number(params.get("leads[update][0][id]"));
+    
+      const leadRes = await fetch(
+        `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`,
+        {
+          headers: {
+            Authorization: `Bearer ${env.AMO_TOKEN}`,
+            Accept: "application/json"
+          }
+        }
+      );
+    
+      if (!leadRes.ok) {
+        console.log("❌ Cannot load lead");
+        return new Response("OK");
+      }
+    
+      const lead = await leadRes.json();
+    
+      const fields = lead.custom_fields_values || [];
+    
+      let type = null;
+      let model = null;
+      let currentCategory = null;
+      let currentPackage = null;
+    
+      for (const field of fields) {
+    
+        if (!field.values?.length) continue;
+    
+        if (field.field_id === 466253) {
+          type = field.values[0].enum_id;
+        }
+    
+        if (field.field_id === 577689) {
+          model = field.values[0].enum_id;
+        }
+    
+        if (field.field_id === 575965) {
+          currentCategory = field.values[0].enum_id;
+        }
+    
+        if (field.field_id === 582429) {
+          currentPackage = field.values[0].enum_id;
+        }
+      }
+    
+      let targetCategory = null;
+      let targetPackage = null;
+    
+      // Покупка БУ
+    
+      if (type === 938373) {
+        targetCategory = 974781;
+        targetPackage = 982611;
+      }
+    
+      // Trade-In
+    
+      else if (type === 957159) {
+        targetCategory = 974783;
+        targetPackage = 982607;
+      }
+    
+      // Новая техника
+    
+      else if (type === 931809) {
+    
+        const accessories = [
+          975967,975969,975971,976049,976051,976053,976055
+        ];
+    
+        const hardware = [
+          975973,975975,975977,975981,975983,980173
+        ];
+    
+        const android = [
+          975979,976893
+        ];
+    
+        const iphones = [
+          975985,975987,975989,975991,
+          975993,975995,975997,975999,
+          976001,976003,976005,976007,
+          976009,976011,976013,976015,
+          976017,976019,976021,976023,
+          976025,976027,976029,976031,
+          976033,976035,976037,976039,
+          976041,976043,976045,976047,
+          976887,976889,976891,
+          977077,
+          978049,978051,978053,978055,
+          979183,
+          981729,981731,981733,981735,
+          982255
+        ];
+    
+        if (iphones.includes(model)) {
+          targetCategory = 974775;
+        }
+    
+        else if (accessories.includes(model)) {
+          targetCategory = 974777;
+          targetPackage = 982613;
+        }
+    
+        else if (hardware.includes(model)) {
+          targetCategory = 974779;
+          targetPackage = 982619;
+        }
+    
+        else if (android.includes(model)) {
+          targetCategory = 982623;
+        }
+      }
+    
+      if (!targetCategory) {
+        console.log("⏭️ Category not determined");
+        return new Response("OK");
+      }
+    
+      const needCategory =
+        currentCategory !== targetCategory;
+    
+      const needPackage =
+        targetPackage &&
+        currentPackage !== targetPackage;
+    
+      if (!needCategory && !needPackage) {
+        console.log("⏭️ Category already correct");
+        return new Response("OK");
+      }
+    
+      const custom_fields_values = [];
+    
+      if (needCategory) {
+        custom_fields_values.push({
+          field_id: 575965,
+          values: [
+            {
+              enum_id: targetCategory
+            }
+          ]
+        });
+      }
+    
+      if (needPackage) {
+        custom_fields_values.push({
+          field_id: 582429,
+          values: [
+            {
+              enum_id: targetPackage
+            }
+          ]
+        });
+      }
+    
+      const patchRes = await fetch(
+        `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${env.AMO_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            custom_fields_values
+          })
+        }
+      );
+    
+      console.log(
+        "📦 Category update:",
+        patchRes.status
+      );
+    
+      return new Response("OK");
+    }
+
       // 🔴 ВАЖНО: Работаем ТОЛЬКО с событиями смены этапа
       // leads[status][0] = смена этапа (как в старом коде)
       // leads[update][0] = обновление полей (ИГНОРИРУЕМ!)
