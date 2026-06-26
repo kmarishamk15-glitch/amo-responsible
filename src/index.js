@@ -340,6 +340,58 @@ export default {
       }
 
       console.log("✅ Responsible updated");
+            // =========================
+      // ОБНОВЛЕНИЕ ДАТЫ СДЕЛКИ
+      // =========================
+      
+      if (
+        oldPipelineId === 5240944 &&
+        oldStatusId === 47069740 &&
+        pipelineId === 5276629 &&
+        [
+          47054479,
+          53410254,
+          53780378,
+          53410258,
+          142
+        ].includes(newStatusId)
+      ) {
+      
+        const today = new Date();
+      
+        const date =
+          today.getFullYear() + "-" +
+          String(today.getMonth() + 1).padStart(2, "0") + "-" +
+          String(today.getDate()).padStart(2, "0");
+      
+        console.log("📅 Updating deal date:", date);
+      
+        const dateRes = await fetch(
+          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${env.AMO_TOKEN}`,
+              "Content-Type": "application/json",
+              Accept: "application/json"
+            },
+            body: JSON.stringify({
+              custom_fields_values: [
+                {
+                  field_id: 573623,
+                  values: [
+                    {
+                      value: date
+                    }
+                  ]
+                }
+              ]
+            })
+          }
+        );
+      
+        console.log("📅 Date update:", dateRes.status);
+      }
       return new Response("OK");
 
     } catch (e) {
