@@ -344,49 +344,7 @@ export default {
       // ОБНОВЛЕНИЕ ДАТЫ СДЕЛКИ
       // =========================
       
-      if (
-        oldPipelineId === 5240944 &&
-        oldStatusId === 47069740 &&
-        pipelineId === 5276629 &&
-        [
-          47054479,
-          53410254,
-          53780378,
-          53410258,
-          142
-        ].includes(newStatusId)
-      ) {
       
-        const today = Math.floor(Date.now() / 1000);
-      
-        console.log("📅 Updating deal date:", new Date(today * 1000).toISOString());
-      
-        const dateRes = await fetch(
-          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
-          {
-            method: "PATCH",
-            headers: {
-              Authorization: `Bearer ${env.AMO_TOKEN}`,
-              "Content-Type": "application/json",
-              Accept: "application/json"
-            },
-            body: JSON.stringify({
-              custom_fields_values: [
-                {
-                  field_id: 573623,
-                  values: [
-                    {
-                      value: today
-                    }
-                  ]
-                }
-              ]
-            })
-          }
-        );
-      
-        console.log("📅 Date update:", dateRes.status);
-      }
       return new Response("OK");
 
     } catch (e) {
