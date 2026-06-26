@@ -357,14 +357,9 @@ export default {
         ].includes(newStatusId)
       ) {
       
-        const today = new Date();
+        const today = Math.floor(Date.now() / 1000);
       
-        const date =
-          today.getFullYear() + "-" +
-          String(today.getMonth() + 1).padStart(2, "0") + "-" +
-          String(today.getDate()).padStart(2, "0");
-      
-        console.log("📅 Updating deal date:", date);
+        console.log("📅 Updating deal date:", new Date(today * 1000).toISOString());
       
         const dateRes = await fetch(
           `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
@@ -381,7 +376,7 @@ export default {
                   field_id: 573623,
                   values: [
                     {
-                      value: date
+                      value: today
                     }
                   ]
                 }
