@@ -343,7 +343,48 @@ export default {
             // =========================
       // ОБНОВЛЕНИЕ ДАТЫ СДЕЛКИ
       // =========================
+      if (
+        oldPipelineId === 5240944 &&
+        oldStatusId === 47069740 &&
+        pipelineId === 5276629 &&
+        [
+          47054479,
+          53410254,
+          53780378,
+          53410258,
+          142
+        ].includes(newStatusId)
+      ) {
       
+        // Формируем timestamp на начало текущего дня (по UTC+3 для Москвы)
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const timestamp = Math.floor(today.getTime() / 1000);
+      
+        console.log("📅 Updating created_at:", new Date(timestamp * 1000).toISOString());
+      
+        // Обновляем СИСТЕМНУЮ дату создания
+        const dateRes = await fetch(
+          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${env.AMO_TOKEN}`,
+              "Content-Type": "application/json",
+              Accept: "application/json"
+            },
+            body: JSON.stringify({
+              created_at: timestamp
+            })
+          }
+        );
+      
+        console.log("📅 Date update:", dateRes.status);
+        
+        if (!dateRes.ok) {
+          console.log("❌ Date update error:", await dateRes.text());
+        }
+      }
       
       return new Response("OK");
 
