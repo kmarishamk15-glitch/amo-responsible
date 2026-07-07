@@ -21,24 +21,13 @@ const RULES = [
   }
 ];
 
-// =========================
-// НАСТРОЙКИ ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ
-// =========================
-const REQUIRED_FIELDS = {
-  pipeline: 5276629, // Воронка "Техника"
-  requiredTypes: [931809, 938373, 957159], // Покупка новой техники, Покупка БУ, Trade-In
-  fields: {
-    model: 577689,      // Модель техники
-    category: 575965    // Категория товара
-  }
-};
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     console.log("======================");
-    console.log(" WORKER START");
+    console.log("🔥 WORKER START");
     console.log("URL:", request.url);
     console.log("METHOD:", request.method);
     console.log("======================");
@@ -67,7 +56,7 @@ export default {
       // =========================
 
       if (params.has("leads[update][0][id]")) {
-        console.log(" CATEGORY CHECK");
+        console.log("📦 CATEGORY CHECK");
 
         const leadId = Number(params.get("leads[update][0][id]"));
 
@@ -212,6 +201,7 @@ export default {
           }
         }
 
+        // ✅ ИСПРАВЛЕНИЕ №2: СНАЧАЛА объявление переменных
         const needCategory =
           currentCategory !== targetCategory;
 
@@ -223,6 +213,7 @@ export default {
           soldPackage &&
           currentSoldPackage !== soldPackage;
 
+        // ✅ ИСПРАВЛЕНИЕ №2: ПОТОМ проверка
         if (
           !needCategory &&
           !needPackage &&
@@ -289,17 +280,18 @@ export default {
         return new Response("OK");
       }
 
-      // =========================
-      // СМЕНА ЭТАПА
-      // =========================
+      // 🔴 ВАЖНО: Работаем ТОЛЬКО с событиями смены этапа
+      // leads[status][0] = смена этапа (как в старом коде)
+      // leads[update][0] = обновление полей (ИГНОРИРУЕМ!)
 
       if (!params.has("leads[status][0][id]")) {
-        console.log("️ Not a status event - IGNORING");
+        console.log("⏭️ Not a status event - IGNORING");
         return new Response("OK");
       }
 
       console.log("📋 Event type: STATUS CHANGE");
 
+      // Данные сделки (как в старом коде)
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
@@ -322,16 +314,18 @@ export default {
       console.log("User ID:", userId);
       console.log("Current Responsible:", currentResponsible);
 
+      // Проверяем: этап реально изменился?
       if (!oldStatusId) {
-        console.log("️ No old status");
+        console.log("⏭️ No old status");
         return new Response("OK");
       }
 
       if (oldStatusId === newStatusId) {
-        console.log("️ Same status");
+        console.log("⏭️ Same status");
         return new Response("OK");
       }
 
+      // Ищем подходящее правило
       const matchedRule = RULES.find(rule => {
         const fromMatches =
           rule.from.pipeline === oldPipelineId &&
@@ -344,6 +338,7 @@ export default {
         return fromMatches && toMatches;
       });
 
+      // Нет подходящего правила
       if (!matchedRule) {
         console.log("⏭️ No matching rule");
         return new Response("OK");
@@ -351,88 +346,19 @@ export default {
 
       console.log("✅ RULE MATCHED!");
 
+      // Нет пользователя?
       if (!userId) {
         console.log("⏭️ No user ID");
         return new Response("OK");
       }
 
+      // Уже нужный ответственный?
       if (currentResponsible === userId) {
         console.log("⏭️ Responsible already correct");
         return new Response("OK");
       }
 
-      // =========================
-      // ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ (БЛОКИРУЮЩАЯ)
-      // =========================
-      if (pipelineId === REQUIRED_FIELDS.pipeline) {
-        console.log("🔍 Checking required fields for pipeline", pipelineId);
-
-        const leadRes = await fetch(
-          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`,
-          {
-            headers: {
-              Authorization: `Bearer ${env.AMO_TOKEN}`,
-              Accept: "application/json"
-            }
-          }
-        );
-
-        if (leadRes.ok) {
-          const leadData = await leadRes.json();
-          const customFields = leadData.custom_fields_values || [];
-
-          let requestType = null;
-          let modelField = null;
-          let categoryField = null;
-
-          for (const field of customFields) {
-            if (!field.values?.length) continue;
-
-            if (field.field_id === 466253) {
-              requestType = field.values[0].enum_id;
-            }
-
-            if (field.field_id === REQUIRED_FIELDS.fields.model) {
-              modelField = field.values[0].value || field.values[0].enum_id;
-            }
-
-            if (field.field_id === REQUIRED_FIELDS.fields.category) {
-              categoryField = field.values[0].value || field.values[0].enum_id;
-            }
-          }
-
-          if (REQUIRED_FIELDS.requiredTypes.includes(requestType)) {
-            const missingFields = [];
-
-            if (!modelField) {
-              missingFields.push("Модель техники");
-            }
-
-            if (!categoryField) {
-              missingFields.push("Категория товара");
-            }
-
-            if (missingFields.length > 0) {
-              console.log("❌ BLOCKED: Missing required fields:", missingFields.join(", "));
-              console.log("Request type:", requestType);
-              
-              // БЛОКИРУЕМ переход
-              return new Response(
-                `⚠️ Заполните обязательные поля: ${missingFields.join(", ")}`,
-                { status: 400 }
-              );
-            } else {
-              console.log("✅ All required fields present");
-            }
-          } else {
-            console.log("⏭️ Request type", requestType, "not in required list - skipping check");
-          }
-        }
-      }
-
-      // =========================
-      // СМЕНА ОТВЕТСТВЕННОГО
-      // =========================
+      // Меняем ответственного
       console.log(`✅ Updating responsible: ${currentResponsible} → ${userId}`);
 
       const updateRes = await fetch(
@@ -473,12 +399,14 @@ export default {
         ].includes(newStatusId)
       ) {
 
+        // Формируем timestamp на начало текущего дня (по UTC+3 для Москвы)
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const timestamp = Math.floor(today.getTime() / 1000);
 
         console.log("📅 Updating created_at:", new Date(timestamp * 1000).toISOString());
 
+        // Обновляем СИСТЕМНУЮ дату создания
         const dateRes = await fetch(
           `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
           {
