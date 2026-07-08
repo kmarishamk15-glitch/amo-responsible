@@ -79,15 +79,12 @@ export default {
 
         const fields = lead.custom_fields_values || [];
 
-        // ✅ ПРАВИЛЬНО: сначала объявляем все переменные через let = null
         let type = null;
         let model = null;
         let currentCategory = null;
         let currentPackage = null;
         let currentSoldPackage = null;
-        let currentRejectReason = null;
 
-        // ✅ Заполняем значения из полей
         for (const field of fields) {
           if (!field.values?.length) continue;
 
@@ -110,18 +107,11 @@ export default {
           if (field.field_id === 582431) {
             currentSoldPackage = field.values[0].enum_id;
           }
-
-          if (field.field_id === 573457) {
-            currentRejectReason = field.values[0].enum_id;
-          }
         }
 
-        // ✅ ПОСЛЕ цикла: инициализируем target текущими значениями
-        // Если тип/модель не распознаны — оставим текущее значение
         let targetCategory = currentCategory;
         let targetPackage = currentPackage;
         let soldPackage = null;
-        let clearRejectReason = false;
 
         // Покупка БУ
         if (type === 938373) {
@@ -169,7 +159,6 @@ export default {
             targetPackage = currentPackage;
           }
         }
-        // 🔧 Если type не распознан — оставляем текущие значения
         else {
           console.log(`⏭️ Type ${type} is unknown, keeping current values`);
           targetCategory = currentCategory;
@@ -200,12 +189,6 @@ export default {
               soldPackage = 982621;
               break;
           }
-
-          // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА ПРИ УСПЕШНОЙ РЕАЛИЗАЦИИ
-          if (currentRejectReason !== null) {
-            clearRejectReason = true;
-            console.log("🧹 Clearing reject reason (status 142)");
-          }
         }
 
         const needCategory =
@@ -222,8 +205,7 @@ export default {
         if (
           !needCategory &&
           !needPackage &&
-          !needSoldPackage &&
-          !clearRejectReason
+          !needSoldPackage
         ) {
           console.log("⏭️ Category already correct");
           return new Response("OK");
@@ -261,14 +243,6 @@ export default {
                 enum_id: soldPackage
               }
             ]
-          });
-        }
-
-        // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА
-        if (clearRejectReason) {
-          custom_fields_values.push({
-            field_id: 573457,
-            values: []
           });
         }
 
@@ -336,6 +310,7 @@ export default {
 
       // =========================
       // 🆕 АВТОМАТИЧЕСКАЯ УСТАНОВКА ПРИЧИНЫ ОТКАЗА
+      // Переход: Техника (5276629) Товар забронирован (53410258) → Дожим (53410254)
       // =========================
       if (
         oldPipelineId === 5276629 &&
@@ -373,6 +348,42 @@ export default {
 
         if (!rejectRes.ok) {
           console.log("❌ Reject reason error:", await rejectRes.text());
+        }
+      }
+
+      // =========================
+      // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА ПРИ ЭТАПЕ 142
+      // =========================
+      if (
+        pipelineId === 5276629 &&
+        newStatusId === 142
+      ) {
+        console.log("🧹 Clearing reject reason (status 142)");
+
+        const clearRes = await fetch(
+          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${env.AMO_TOKEN}`,
+              "Content-Type": "application/json",
+              Accept: "application/json"
+            },
+            body: JSON.stringify({
+              custom_fields_values: [
+                {
+                  field_id: 573457,
+                  values: []
+                }
+              ]
+            })
+          }
+        );
+
+        console.log("🧹 Clear reject reason:", clearRes.status);
+
+        if (!clearRes.ok) {
+          console.log("❌ Clear reject reason error:", await clearRes.text());
         }
       }
 
