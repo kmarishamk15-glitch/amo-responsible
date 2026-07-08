@@ -79,12 +79,15 @@ export default {
 
         const fields = lead.custom_fields_values || [];
 
+        // ✅ ПРАВИЛЬНО: сначала объявляем все переменные через let = null
         let type = null;
         let model = null;
         let currentCategory = null;
         let currentPackage = null;
         let currentSoldPackage = null;
+        let currentRejectReason = null;
 
+        // ✅ Заполняем значения из полей
         for (const field of fields) {
           if (!field.values?.length) continue;
 
@@ -107,11 +110,18 @@ export default {
           if (field.field_id === 582431) {
             currentSoldPackage = field.values[0].enum_id;
           }
+
+          if (field.field_id === 573457) {
+            currentRejectReason = field.values[0].enum_id;
+          }
         }
 
-        let targetCategory = null;
-        let targetPackage = null;
+        // ✅ ПОСЛЕ цикла: инициализируем target текущими значениями
+        // Если тип/модель не распознаны — оставим текущее значение
+        let targetCategory = currentCategory;
+        let targetPackage = currentPackage;
         let soldPackage = null;
+        let clearRejectReason = false;
 
         // Покупка БУ
         if (type === 938373) {
@@ -127,52 +137,43 @@ export default {
 
         // Новая техника
         else if (type === 931809) {
-          const accessories = [
-            975967, 975969, 975971, 976049, 976051, 976053, 976055
-          ];
-
-          const hardware = [
-            975973, 975975, 975977, 975981, 975983, 980173
-          ];
-
-          const android = [
-            975979, 976893
-          ];
-
+          const accessories = [975967, 975969, 975971, 976049, 976051, 976053, 976055];
+          const hardware = [975973, 975975, 975977, 975981, 975983, 980173];
+          const android = [975979, 976893];
           const iphones = [
-            975985, 975987, 975989, 975991,
-            975993, 975995, 975997, 975999,
-            976001, 976003, 976005, 976007,
-            976009, 976011, 976013, 976015,
-            976017, 976019, 976021, 976023,
-            976025, 976027, 976029, 976031,
-            976033, 976035, 976037, 976039,
-            976041, 976043, 976045, 976047,
-            976887, 976889, 976891,
-            977077,
-            978049, 978051, 978053, 978055,
-            979183,
-            981729, 981731, 981733, 981735,
-            982255
+            975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
+            976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015,
+            976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031,
+            976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047,
+            976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055,
+            979183, 981729, 981731, 981733, 981735, 982255
           ];
 
           if (iphones.includes(model)) {
             targetCategory = 974775;
           }
-
           else if (accessories.includes(model)) {
             targetCategory = 974777;
             targetPackage = 982613;
           }
-
           else if (hardware.includes(model)) {
             targetCategory = 974779;
             targetPackage = 982619;
           }
-
           else if (android.includes(model)) {
             targetCategory = 982623;
           }
+          else {
+            console.log(`⏭️ Model ${model} is 'Прочее' or unknown, keeping current values`);
+            targetCategory = currentCategory;
+            targetPackage = currentPackage;
+          }
+        }
+        // 🔧 Если type не распознан — оставляем текущие значения
+        else {
+          console.log(`⏭️ Type ${type} is unknown, keeping current values`);
+          targetCategory = currentCategory;
+          targetPackage = currentPackage;
         }
 
         // =========================
@@ -199,9 +200,14 @@ export default {
               soldPackage = 982621;
               break;
           }
+
+          // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА ПРИ УСПЕШНОЙ РЕАЛИЗАЦИИ
+          if (currentRejectReason !== null) {
+            clearRejectReason = true;
+            console.log("🧹 Clearing reject reason (status 142)");
+          }
         }
 
-        // ✅ ИСПРАВЛЕНИЕ №2: СНАЧАЛА объявление переменных
         const needCategory =
           currentCategory !== targetCategory;
 
@@ -213,11 +219,11 @@ export default {
           soldPackage &&
           currentSoldPackage !== soldPackage;
 
-        // ✅ ИСПРАВЛЕНИЕ №2: ПОТОМ проверка
         if (
           !needCategory &&
           !needPackage &&
-          !needSoldPackage
+          !needSoldPackage &&
+          !clearRejectReason
         ) {
           console.log("⏭️ Category already correct");
           return new Response("OK");
@@ -258,6 +264,14 @@ export default {
           });
         }
 
+        // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА
+        if (clearRejectReason) {
+          custom_fields_values.push({
+            field_id: 573457,
+            values: []
+          });
+        }
+
         const patchRes = await fetch(
           `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
           {
@@ -281,9 +295,6 @@ export default {
       }
 
       // 🔴 ВАЖНО: Работаем ТОЛЬКО с событиями смены этапа
-      // leads[status][0] = смена этапа (как в старом коде)
-      // leads[update][0] = обновление полей (ИГНОРИРУЕМ!)
-
       if (!params.has("leads[status][0][id]")) {
         console.log("⏭️ Not a status event - IGNORING");
         return new Response("OK");
@@ -291,7 +302,6 @@ export default {
 
       console.log("📋 Event type: STATUS CHANGE");
 
-      // Данные сделки (как в старом коде)
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
@@ -314,7 +324,6 @@ export default {
       console.log("User ID:", userId);
       console.log("Current Responsible:", currentResponsible);
 
-      // Проверяем: этап реально изменился?
       if (!oldStatusId) {
         console.log("⏭️ No old status");
         return new Response("OK");
@@ -325,7 +334,48 @@ export default {
         return new Response("OK");
       }
 
-      // Ищем подходящее правило
+      // =========================
+      // 🆕 АВТОМАТИЧЕСКАЯ УСТАНОВКА ПРИЧИНЫ ОТКАЗА
+      // =========================
+      if (
+        oldPipelineId === 5276629 &&
+        oldStatusId === 53410258 &&
+        pipelineId === 5276629 &&
+        newStatusId === 53410254
+      ) {
+        console.log("🔄 Setting reject reason: НВНС после брони (978575)");
+
+        const rejectRes = await fetch(
+          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${env.AMO_TOKEN}`,
+              "Content-Type": "application/json",
+              Accept: "application/json"
+            },
+            body: JSON.stringify({
+              custom_fields_values: [
+                {
+                  field_id: 573457,
+                  values: [
+                    {
+                      enum_id: 978575
+                    }
+                  ]
+                }
+              ]
+            })
+          }
+        );
+
+        console.log("📝 Reject reason update:", rejectRes.status);
+
+        if (!rejectRes.ok) {
+          console.log("❌ Reject reason error:", await rejectRes.text());
+        }
+      }
+
       const matchedRule = RULES.find(rule => {
         const fromMatches =
           rule.from.pipeline === oldPipelineId &&
@@ -338,7 +388,6 @@ export default {
         return fromMatches && toMatches;
       });
 
-      // Нет подходящего правила
       if (!matchedRule) {
         console.log("⏭️ No matching rule");
         return new Response("OK");
@@ -346,19 +395,16 @@ export default {
 
       console.log("✅ RULE MATCHED!");
 
-      // Нет пользователя?
       if (!userId) {
         console.log("⏭️ No user ID");
         return new Response("OK");
       }
 
-      // Уже нужный ответственный?
       if (currentResponsible === userId) {
         console.log("⏭️ Responsible already correct");
         return new Response("OK");
       }
 
-      // Меняем ответственного
       console.log(`✅ Updating responsible: ${currentResponsible} → ${userId}`);
 
       const updateRes = await fetch(
@@ -399,14 +445,12 @@ export default {
         ].includes(newStatusId)
       ) {
 
-        // Формируем timestamp на начало текущего дня (по UTC+3 для Москвы)
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const timestamp = Math.floor(today.getTime() / 1000);
 
         console.log("📅 Updating created_at:", new Date(timestamp * 1000).toISOString());
 
-        // Обновляем СИСТЕМНУЮ дату создания
         const dateRes = await fetch(
           `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
           {
