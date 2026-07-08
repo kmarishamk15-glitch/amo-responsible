@@ -56,7 +56,7 @@ export default {
       // =========================
 
       if (params.has("leads[update][0][id]")) {
-        console.log("📦 CATEGORY CHECK");
+        console.log(" CATEGORY CHECK");
 
         const leadId = Number(params.get("leads[update][0][id]"));
 
@@ -174,18 +174,11 @@ export default {
             targetCategory = 982623;
           }
 
-          // 👇 ОБРАБОТКА МОДЕЛИ "ПРОЧЕЕ"
-          else if (model === 976057) {
-            console.log("⏭️ Model is 'Прочее' (976057), skip category update");
-            targetCategory = null;
-            targetPackage = null;
-          }
-
-          // 👇 ЛЮБАЯ ДРУГАЯ НЕИЗВЕСТНАЯ МОДЕЛЬ
+          //  ОБРАБОТКА МОДЕЛИ "ПРОЧЕЕ" И НЕИЗВЕСТНЫХ МОДЕЛЕЙ
           else {
-            console.log(`⏭️ Unknown model ${model}, skip category update`);
-            targetCategory = null;
-            targetPackage = null;
+            console.log(`⏭️ Model ${model} is 'Прочее' or unknown, keeping current values`);
+            targetCategory = currentCategory; // Оставляем то, что уже стоит
+            targetPackage = currentPackage;   // Оставляем то, что уже стоит
           }
         }
 
