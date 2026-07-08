@@ -280,7 +280,12 @@ export default {
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+      
+      // ✅ ИСПРАВЛЕНО: используем текущую воронку как fallback вместо 5240944
+      const oldPipelineId = Number(
+        params.get("leads[status][0][old_pipeline_id]") ??
+        params.get("leads[status][0][pipeline_id]")
+      );
 
       const userId = Number(
         params.get("leads[status][0][modified_user_id]") ||
@@ -311,11 +316,11 @@ export default {
       // =========================
       // 🆕 АВТОМАТИЧЕСКАЯ УСТАНОВКА ПРИЧИНЫ ОТКАЗА
       // Переход: Техника (5276629) Товар забронирован (53410258) → Дожим (53410254)
+      // ✅ ИСПРАВЛЕНО: убрана проверка oldPipelineId
       // =========================
       if (
-        oldPipelineId === 5276629 &&
-        oldStatusId === 53410258 &&
         pipelineId === 5276629 &&
+        oldStatusId === 53410258 &&
         newStatusId === 53410254
       ) {
         console.log("🔄 Setting reject reason: НВНС после брони (978575)");
@@ -345,14 +350,16 @@ export default {
         );
 
         console.log("📝 Reject reason update:", rejectRes.status);
+        console.log("📝 Reject reason response:", await rejectRes.text());
 
         if (!rejectRes.ok) {
-          console.log("❌ Reject reason error:", await rejectRes.text());
+          console.log("❌ Reject reason error");
         }
       }
 
       // =========================
       // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА ПРИ ЭТАПЕ 142
+      // ✅ ИСПРАВЛЕНО: убрана проверка oldPipelineId, используем values: null
       // =========================
       if (
         pipelineId === 5276629 &&
@@ -373,7 +380,7 @@ export default {
               custom_fields_values: [
                 {
                   field_id: 573457,
-                  values: []
+                  values: null
                 }
               ]
             })
@@ -381,9 +388,10 @@ export default {
         );
 
         console.log("🧹 Clear reject reason:", clearRes.status);
+        console.log("🧹 Clear reject reason response:", await clearRes.text());
 
         if (!clearRes.ok) {
-          console.log("❌ Clear reject reason error:", await clearRes.text());
+          console.log("❌ Clear reject reason error");
         }
       }
 
