@@ -173,6 +173,20 @@ export default {
           else if (android.includes(model)) {
             targetCategory = 982623;
           }
+
+          // 👇 ОБРАБОТКА МОДЕЛИ "ПРОЧЕЕ"
+          else if (model === 976057) {
+            console.log("⏭️ Model is 'Прочее' (976057), skip category update");
+            targetCategory = null;
+            targetPackage = null;
+          }
+
+          // 👇 ЛЮБАЯ ДРУГАЯ НЕИЗВЕСТНАЯ МОДЕЛЬ
+          else {
+            console.log(`⏭️ Unknown model ${model}, skip category update`);
+            targetCategory = null;
+            targetPackage = null;
+          }
         }
 
         // =========================
@@ -201,7 +215,6 @@ export default {
           }
         }
 
-        // ✅ ИСПРАВЛЕНИЕ №2: СНАЧАЛА объявление переменных
         const needCategory =
           currentCategory !== targetCategory;
 
@@ -213,7 +226,6 @@ export default {
           soldPackage &&
           currentSoldPackage !== soldPackage;
 
-        // ✅ ИСПРАВЛЕНИЕ №2: ПОТОМ проверка
         if (
           !needCategory &&
           !needPackage &&
