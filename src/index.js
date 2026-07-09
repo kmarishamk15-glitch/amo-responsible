@@ -281,11 +281,16 @@ export default {
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
       
-      // ✅ ИСПРАВЛЕНО: используем текущую воронку как fallback вместо 5240944
-      const oldPipelineId = Number(
-        params.get("leads[status][0][old_pipeline_id]") ??
-        params.get("leads[status][0][pipeline_id]")
-      );
+      // ✅ ИСПРАВЛЕНО: правильная логика определения oldPipelineId
+      const oldPipelineIdRaw = params.get("leads[status][0][old_pipeline_id]");
+      let oldPipelineId;
+      if (oldPipelineIdRaw) {
+        oldPipelineId = Number(oldPipelineIdRaw);
+      } else if (pipelineId === 5276629) {
+        oldPipelineId = 5276629;
+      } else {
+        oldPipelineId = 5240944;
+      }
 
       const userId = Number(
         params.get("leads[status][0][modified_user_id]") ||
@@ -316,7 +321,6 @@ export default {
       // =========================
       // 🆕 АВТОМАТИЧЕСКАЯ УСТАНОВКА ПРИЧИНЫ ОТКАЗА
       // Переход: Техника (5276629) Товар забронирован (53410258) → Дожим (53410254)
-      // ✅ ИСПРАВЛЕНО: убрана проверка oldPipelineId
       // =========================
       if (
         pipelineId === 5276629 &&
@@ -359,7 +363,6 @@ export default {
 
       // =========================
       // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА ПРИ ЭТАПЕ 142
-      // ✅ ИСПРАВЛЕНО: убрана проверка oldPipelineId, используем values: null
       // =========================
       if (
         pipelineId === 5276629 &&
