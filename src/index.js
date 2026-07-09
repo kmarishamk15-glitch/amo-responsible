@@ -109,8 +109,10 @@ export default {
           }
         }
 
-        let targetCategory = null;
-        let targetPackage = null;
+        // ✅ ИСПРАВЛЕНИЕ: инициализируем ТЕКУЩИМИ значениями
+        // Если тип не распознан — оставим как есть
+        let targetCategory = currentCategory;
+        let targetPackage = currentPackage;
         let soldPackage = null;
 
         // Покупка БУ
@@ -173,7 +175,10 @@ export default {
           else if (android.includes(model)) {
             targetCategory = 982623;
           }
+          // ✅ Если модель не найдена (Прочее/неизвестная) —
+          // targetCategory остаётся = currentCategory, ничего не меняется
         }
+        // ✅ Если тип не распознан — targetCategory остаётся = currentCategory
 
         // =========================
         // ЛИД ПРОДАН ПО ПАКЕТУ
@@ -201,7 +206,6 @@ export default {
           }
         }
 
-        // ✅ ИСПРАВЛЕНИЕ №2: СНАЧАЛА объявление переменных
         const needCategory =
           currentCategory !== targetCategory;
 
@@ -213,7 +217,6 @@ export default {
           soldPackage &&
           currentSoldPackage !== soldPackage;
 
-        // ✅ ИСПРАВЛЕНИЕ №2: ПОТОМ проверка
         if (
           !needCategory &&
           !needPackage &&
@@ -281,9 +284,6 @@ export default {
       }
 
       // 🔴 ВАЖНО: Работаем ТОЛЬКО с событиями смены этапа
-      // leads[status][0] = смена этапа (как в старом коде)
-      // leads[update][0] = обновление полей (ИГНОРИРУЕМ!)
-
       if (!params.has("leads[status][0][id]")) {
         console.log("⏭️ Not a status event - IGNORING");
         return new Response("OK");
@@ -291,7 +291,6 @@ export default {
 
       console.log("📋 Event type: STATUS CHANGE");
 
-      // Данные сделки (как в старом коде)
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
@@ -314,7 +313,6 @@ export default {
       console.log("User ID:", userId);
       console.log("Current Responsible:", currentResponsible);
 
-      // Проверяем: этап реально изменился?
       if (!oldStatusId) {
         console.log("⏭️ No old status");
         return new Response("OK");
@@ -325,7 +323,6 @@ export default {
         return new Response("OK");
       }
 
-      // Ищем подходящее правило
       const matchedRule = RULES.find(rule => {
         const fromMatches =
           rule.from.pipeline === oldPipelineId &&
@@ -338,7 +335,6 @@ export default {
         return fromMatches && toMatches;
       });
 
-      // Нет подходящего правила
       if (!matchedRule) {
         console.log("⏭️ No matching rule");
         return new Response("OK");
@@ -346,19 +342,16 @@ export default {
 
       console.log("✅ RULE MATCHED!");
 
-      // Нет пользователя?
       if (!userId) {
         console.log("⏭️ No user ID");
         return new Response("OK");
       }
 
-      // Уже нужный ответственный?
       if (currentResponsible === userId) {
         console.log("⏭️ Responsible already correct");
         return new Response("OK");
       }
 
-      // Меняем ответственного
       console.log(`✅ Updating responsible: ${currentResponsible} → ${userId}`);
 
       const updateRes = await fetch(
@@ -399,14 +392,12 @@ export default {
         ].includes(newStatusId)
       ) {
 
-        // Формируем timestamp на начало текущего дня (по UTC+3 для Москвы)
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const timestamp = Math.floor(today.getTime() / 1000);
 
         console.log("📅 Updating created_at:", new Date(timestamp * 1000).toISOString());
 
-        // Обновляем СИСТЕМНУЮ дату создания
         const dateRes = await fetch(
           `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
           {
