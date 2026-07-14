@@ -324,15 +324,12 @@ export default {
       }
 
       // ========================================
-      // 🆕 ОЧИСТКА ПРИЧИНЫ ОТКАЗА ПРИ ЭТАПЕ 142
-      // Воронка Техника (5276629) + этап Клиент купил (142)
+      // 🆕 БЛОК ДЕЙСТВИЙ ПРИ ЭТАПЕ 142 (Клиент купил)
       // ========================================
-      if (
-        pipelineId === 5276629 &&
-        newStatusId === 142
-      ) {
+      if (pipelineId === 5276629 && newStatusId === 142) {
+        
+        // 1. ОЧИСТКА ПРИЧИНЫ ОТКАЗА
         console.log("🧹 Clearing reject reason (status 142)");
-
         const clearRes = await fetch(
           `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
           {
@@ -352,9 +349,88 @@ export default {
             })
           }
         );
+        console.log("🧹 Clear reject reason status:", clearRes.status);
 
-        console.log("🧹 Clear status:", clearRes.status);
-        console.log("🧹 Clear response:", await clearRes.text());
+        // 2. АВТОМАТИЧЕСКАЯ УСТАНОВКА ТИПА ЗАПРОСА ПО КАТЕГОРИИ
+        console.log("🔄 Checking category to set request type (status 142)");
+        
+        // Получаем актуальные поля сделки, так как в статус-вебхуке их может не быть
+        const leadDetailsRes = await fetch(
+          `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`,
+          {
+            headers: {
+              Authorization: `Bearer ${env.AMO_TOKEN}`,
+              Accept: "application/json"
+            }
+          }
+        );
+
+        if (leadDetailsRes.ok) {
+          const leadDetails = await leadDetailsRes.json();
+          const fields = leadDetails.custom_fields_values || [];
+          
+          let currentCategory = null;
+          for (const field of fields) {
+            if (field.field_id === 575965 && field.values?.length) {
+              currentCategory = field.values[0].enum_id;
+              break;
+            }
+          }
+
+          let targetRequestType = null;
+
+          if (currentCategory) {
+            // Группируем категории, которые ведут к "Новая техника" (931809)
+            if ([974775, 974777, 974779, 982623].includes(currentCategory)) {
+              targetRequestType = 931809;
+            } 
+            // Б/У
+            else if (currentCategory === 974781) {
+              targetRequestType = 938373;
+            } 
+            // Трейд-ин
+            else if (currentCategory === 974783) {
+              targetRequestType = 957159;
+            }
+          }
+
+          if (targetRequestType) {
+            console.log(`✅ Setting request type to ${targetRequestType} based on category ${currentCategory}`);
+            
+            const updateTypeRes = await fetch(
+              `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`,
+              {
+                method: "PATCH",
+                headers: {
+                  Authorization: `Bearer ${env.AMO_TOKEN}`,
+                  "Content-Type": "application/json",
+                  Accept: "application/json"
+                },
+                body: JSON.stringify({
+                  custom_fields_values: [
+                    {
+                      field_id: 466253,
+                      values: [
+                        {
+                          enum_id: targetRequestType
+                        }
+                      ]
+                    }
+                  ]
+                })
+              }
+            );
+
+            console.log("🔄 Request type update status:", updateTypeRes.status);
+            if (!updateTypeRes.ok) {
+              console.log("❌ Request type update error:", await updateTypeRes.text());
+            }
+          } else {
+            console.log("⏭️ Category not mapped or not found, skipping request type update.");
+          }
+        } else {
+          console.log("❌ Cannot load lead details for category check");
+        }
       }
 
       // ========================================
@@ -410,7 +486,7 @@ export default {
       if (!updateRes.ok) {
         console.log("❌ UPDATE ERROR:", await updateRes.text());
         return new Response("ERROR", { status: 500 });
-      }
+        }
 
       console.log("✅ Responsible updated");
 
