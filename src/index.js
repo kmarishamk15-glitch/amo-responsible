@@ -75,24 +75,34 @@ function derivePackage(type, model, currentPackage) {
   return target;
 }
 
+// 🆕 Проверка акции по названию сделки (case insensitive)
+function isPromo(leadName) {
+  if (!leadName) return false;
+  return leadName.toLowerCase().includes("акция");
+}
+
 // Расчёт бюджета. Возвращает { budget, forceNoDiscount }
-function calcBudget(category, model, discount, soldPackage) {
+function calcBudget(category, model, discount, soldPackage, promo = false) {
   let budget = null;
   let forceNoDiscount = false;
+  const multiplier = promo ? 2 : 1;
 
   if (category === 974775) {
     forceNoDiscount = true;
-    budget = BUDGET_IPHONE_BY_PACKAGE[soldPackage] ?? null;
+    const base = BUDGET_IPHONE_BY_PACKAGE[soldPackage];
+    budget = base != null ? base * multiplier : null;
   } else if (category === 974783) {
-    budget = 1500;
+    budget = 1500 * multiplier;
   } else {
     let table = null;
     if (category === 974777) table = (model === AIRPODS_MAX) ? BUDGET_HARDWARE : BUDGET_AKSY;
     else if (category === 974779) table = BUDGET_HARDWARE;
     else if (category === 974781 || category === 982623) table = BUDGET_BU;
 
-    if (table && discount != null) budget = table[discount] ?? null;
-    // 981921, 974067, 976377, 979856 и пустые значения → null → бюджет не трогаем
+    if (table && discount != null) {
+      const base = table[discount];
+      budget = base != null ? base * multiplier : null;
+    }
   }
 
   return { budget, forceNoDiscount };
@@ -126,6 +136,39 @@ function getCorrectionUpdate(fields, responsibleId) {
   return null;
 }
 
+// 🆕 Функция для расчёта и подготовки обновления бюджета
+function getBudgetUpdates(lead, fields, promo, logPrefix) {
+  const custom_fields_values = [];
+  let newPrice = null;
+
+  let type = null, model = null, currentDiscount = null, currentSoldPackage = null;
+  let currentCategory = null;
+
+  for (const field of fields) {
+    if (!field.values?.length) continue;
+    if (field.field_id === 466253) type = field.values[0].enum_id;
+    if (field.field_id === 577689) model = field.values[0].enum_id;
+    if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+    if (field.field_id === 574827) currentDiscount = field.values[0].enum_id;
+    if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
+  }
+
+  const effectiveCategory = deriveCategory(type, model, currentCategory);
+  const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
+
+  if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
+    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
+    custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
+  }
+
+  if (budget != null && lead.price !== budget) {
+    console.log(`${logPrefix} 💰 Setting budget: ${lead.price} → ${budget}${promo ? " (x2 promo)" : ""}`);
+    newPrice = budget;
+  }
+
+  return { custom_fields_values, newPrice };
+}
+
 export default {
   async fetch(request, env, ctx) {
     console.log("======================");
@@ -146,7 +189,6 @@ export default {
 
       // =========================
       // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
-      //    Категория + корректировка. Бюджет здесь НЕ трогаем.
       // =========================
       if (params.has("leads[update][0][id]")) {
         console.log("📦 UPDATE EVENT");
@@ -200,15 +242,27 @@ export default {
         const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
         if (correctionUpdate) custom_fields_values.push(correctionUpdate);
 
-        if (custom_fields_values.length === 0) {
+        // 🆕 БЮДЖЕТ: пересчитываем на каждом обновлении, если сделка в 142 И акционная
+        let newPrice = null;
+        if (lead.pipeline_id === 5276629 && lead.status_id === 142 && isPromo(lead.name)) {
+          console.log("🎯 Promo deal detected in UPDATE event → recalculating budget");
+          const budgetUpdates = getBudgetUpdates(lead, fields, true, "[UPDATE]");
+          custom_fields_values.push(...budgetUpdates.custom_fields_values);
+          newPrice = budgetUpdates.newPrice;
+        }
+
+        if (custom_fields_values.length === 0 && newPrice == null) {
           console.log("⏭️ Nothing to update");
           return new Response("OK");
         }
 
+        const patchBody = { custom_fields_values };
+        if (newPrice != null) patchBody.price = newPrice;
+
         const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ custom_fields_values })
+          body: JSON.stringify(patchBody)
         });
 
         console.log("📦 Update PATCH:", patchRes.status);
@@ -248,20 +302,18 @@ export default {
       const fields = leadData.custom_fields_values || [];
       const actualResponsibleId = leadData.responsible_user_id;
 
-      let type = null, model = null, currentCategory = null, currentDiscount = null, currentSoldPackage = null;
+      let type = null, model = null, currentCategory = null;
       for (const field of fields) {
         if (!field.values?.length) continue;
         if (field.field_id === 466253) type = field.values[0].enum_id;
         if (field.field_id === 577689) model = field.values[0].enum_id;
         if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
-        if (field.field_id === 574827) currentDiscount = field.values[0].enum_id;
-        if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
       }
 
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // --- Статус 142 (Купил): причина отказа, тип запроса, БЮДЖЕТ (один раз) ---
+      // --- Статус 142 (Купил) ---
       if (pipelineId === 5276629 && newStatusId === 142) {
         console.log("🧹 Status 142 processing");
         customFieldsUpdates.push({ field_id: 573457, values: null });
@@ -278,18 +330,13 @@ export default {
           customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
         }
 
-        // 💰 БЮДЖЕТ: ставится ТОЛЬКО здесь, один раз. Потом не правится никогда.
-        const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage);
-
-        if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-          console.log("🧾 iPhone: forcing discount to 'Без скидки'");
-          customFieldsUpdates.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
-        }
-
-        if (budget != null && leadData.price !== budget) {
-          console.log(`💰 Setting budget once: ${leadData.price} → ${budget}`);
-          patchPayload.price = budget;
-        }
+        // 💰 БЮДЖЕТ: ставится при переходе в 142. Для акций — x2.
+        const promo = isPromo(leadData.name);
+        if (promo) console.log("🎯 Promo deal detected → budget x2");
+        
+        const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
+        customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
+        if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
 
       // --- Смена ответственного по RULES ---
