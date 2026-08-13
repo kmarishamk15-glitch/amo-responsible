@@ -75,13 +75,11 @@ function derivePackage(type, model, currentPackage) {
   return target;
 }
 
-// 🆕 Проверка акции по названию сделки (case insensitive)
 function isPromo(leadName) {
   if (!leadName) return false;
   return leadName.toLowerCase().includes("акция");
 }
 
-// Расчёт бюджета. Возвращает { budget, forceNoDiscount }
 function calcBudget(category, model, discount, soldPackage, promo = false) {
   let budget = null;
   let forceNoDiscount = false;
@@ -92,7 +90,8 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
     const base = BUDGET_IPHONE_BY_PACKAGE[soldPackage];
     budget = base != null ? base * multiplier : null;
   } else if (category === 974783) {
-    budget = 1500 * multiplier;
+    // 🆕 Трейд-ин всегда 1500, БЕЗ множителя x2 даже для акций
+    budget = 1500;
   } else {
     let table = null;
     if (category === 974777) table = (model === AIRPODS_MAX) ? BUDGET_HARDWARE : BUDGET_AKSY;
@@ -136,7 +135,6 @@ function getCorrectionUpdate(fields, responsibleId) {
   return null;
 }
 
-// 🆕 Функция для расчёта и подготовки обновления бюджета
 function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const custom_fields_values = [];
   let newPrice = null;
@@ -242,11 +240,12 @@ export default {
         const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
         if (correctionUpdate) custom_fields_values.push(correctionUpdate);
 
-        // 🆕 БЮДЖЕТ: пересчитываем на каждом обновлении, если сделка в 142 И акционная
+        // 🆕 БЮДЖЕТ: пересчитываем при ЛЮБОМ обновлении сделки в 142
         let newPrice = null;
-        if (lead.pipeline_id === 5276629 && lead.status_id === 142 && isPromo(lead.name)) {
-          console.log("🎯 Promo deal detected in UPDATE event → recalculating budget");
-          const budgetUpdates = getBudgetUpdates(lead, fields, true, "[UPDATE]");
+        if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
+          const promo = isPromo(lead.name);
+          console.log(`📊 Budget recalculation for status 142${promo ? " (x2 promo)" : ""}`);
+          const budgetUpdates = getBudgetUpdates(lead, fields, promo, "[UPDATE]");
           custom_fields_values.push(...budgetUpdates.custom_fields_values);
           newPrice = budgetUpdates.newPrice;
         }
@@ -330,7 +329,6 @@ export default {
           customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
         }
 
-        // 💰 БЮДЖЕТ: ставится при переходе в 142. Для акций — x2.
         const promo = isPromo(leadData.name);
         if (promo) console.log("🎯 Promo deal detected → budget x2");
         
