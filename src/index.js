@@ -25,20 +25,46 @@ const CORRECTION_FIELD_NAMES = {
   983525: "Даниил Бровкин", 983527: "Михаил Кострюков"
 };
 
+// 🆕 Общая функция проверки корректировки по ФИО
+function getCorrectionUpdate(fields, responsibleId) {
+  let currentCorrectionId = null;
+  let currentCorrectionName = null;
+
+  for (const field of fields) {
+    if (field.field_id === 582983 && field.values?.length) {
+      currentCorrectionId = field.values[0].enum_id || field.values[0].value;
+      currentCorrectionName = CORRECTION_FIELD_NAMES[currentCorrectionId] || field.values[0].value;
+    }
+  }
+
+  const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
+
+  console.log(`🔍 Correction check: responsible = ${responsibleName || responsibleId}, correction = ${currentCorrectionName || currentCorrectionId || "empty"}`);
+
+  if (
+    responsibleName &&
+    currentCorrectionName &&
+    currentCorrectionName === responsibleName &&
+    currentCorrectionId !== 983499
+  ) {
+    console.log("✅ Names match → setting 'Не требуется' (983499)");
+    return { field_id: 582983, values: [{ enum_id: 983499 }] };
+  }
+
+  console.log("⏭️ Correction update not needed");
+  return null;
+}
+
 export default {
   async fetch(request, env, ctx) {
     console.log("======================");
-    console.log("🔥 WORKER START");
-    console.log("URL:", request.url);
-    console.log("METHOD:", request.method);
+    console.log("🔥 WORKER START |", request.method);
     console.log("======================");
 
     if (request.method === "GET") return new Response("Webhook works");
     if (request.method !== "POST") return new Response("OK");
 
     try {
-      console.log("📥 WEBHOOK RECEIVED");
-
       if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) {
         console.log("❌ ENV NOT SET");
         return new Response("ENV ERROR");
@@ -48,11 +74,12 @@ export default {
       const params = new URLSearchParams(rawBody);
 
       // =========================
-      // 1. КАТЕГОРИЯ ТОВАРА (Обновление полей)
+      // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
+      //    Категория товара + ПРОВЕРКА КОРРЕКТИРОВКИ
       // =========================
       if (params.has("leads[update][0][id]")) {
-        console.log("📦 CATEGORY CHECK");
-        
+        console.log("📦 UPDATE EVENT (fields/responsible)");
+
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -80,8 +107,8 @@ export default {
         let targetPackage = currentPackage;
         let soldPackage = null;
 
-        if (type === 938373) { targetCategory = 974781; targetPackage = 982611; } 
-        else if (type === 957159) { targetCategory = 974783; targetPackage = 982607; } 
+        if (type === 938373) { targetCategory = 974781; targetPackage = 982611; }
+        else if (type === 957159) { targetCategory = 974783; targetPackage = 982607; }
         else if (type === 931809) {
           const accessories = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
           const hardware = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
@@ -101,19 +128,26 @@ export default {
           else if (currentPackage === 982619) soldPackage = 982621;
         }
 
-        const needCategory = currentCategory !== targetCategory;
-        const needPackage = targetPackage && currentPackage !== targetPackage;
-        const needSoldPackage = soldPackage && currentSoldPackage !== soldPackage;
+        const custom_fields_values = [];
 
-        if (!needCategory && !needPackage && !needSoldPackage) {
-          console.log("⏭️ Category already correct");
-          return new Response("OK");
+        if (currentCategory !== targetCategory) {
+          custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
+        }
+        if (targetPackage && currentPackage !== targetPackage) {
+          custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
+        }
+        if (soldPackage && currentSoldPackage !== soldPackage) {
+          custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
         }
 
-        const custom_fields_values = [];
-        if (needCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
-        if (needPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
-        if (needSoldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
+        // 🆕 Проверка корректировки ТЕПЕРЬ и здесь
+        const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
+        if (correctionUpdate) custom_fields_values.push(correctionUpdate);
+
+        if (custom_fields_values.length === 0) {
+          console.log("⏭️ Nothing to update (category + correction already correct)");
+          return new Response("OK");
+        }
 
         const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
@@ -121,12 +155,12 @@ export default {
           body: JSON.stringify({ custom_fields_values })
         });
 
-        console.log("📦 Category update:", patchRes.status);
+        console.log("📦 Update PATCH:", patchRes.status);
         return new Response("OK");
       }
 
       // =========================
-      // 2. СМЕНА СТАТУСА (Оптимизированный блок)
+      // 2. СМЕНА СТАТУСА (leads[status])
       // =========================
       if (!params.has("leads[status][0][id]")) {
         console.log("⏭️ Not a status event - IGNORING");
@@ -141,17 +175,12 @@ export default {
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
       const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]") || params.get("leads[status][0][updated_by]"));
-      const webhookResponsible = Number(params.get("leads[status][0][responsible_user_id]"));
 
-      console.log("Lead ID:", leadId);
-      console.log("Old Pipeline:", oldPipelineId, "Old Status:", oldStatusId);
-      console.log("New Pipeline:", pipelineId, "New Status:", newStatusId);
+      console.log("Lead:", leadId, "|", oldPipelineId, oldStatusId, "→", pipelineId, newStatusId);
 
-      if (!oldStatusId) return new Response("OK");
-      if (oldStatusId === newStatusId) return new Response("OK");
+      if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
 
-      // 🟢 ДЕЛАЕМ ТОЛЬКО ОДИН GET-ЗАПРОС ДЛЯ ВСЕХ ПРОВЕРОК
-      console.log("🔎 Fetching lead details (single GET)");
+      // Один GET на все проверки
       const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
       });
@@ -165,27 +194,17 @@ export default {
       const actualResponsibleId = leadData.responsible_user_id;
 
       let currentCategory = null;
-      let currentCorrectionId = null;
-      let currentCorrectionName = null;
-
       for (const field of fields) {
-        if (field.field_id === 575965 && field.values?.length) {
-          currentCategory = field.values[0].enum_id;
-        }
-        if (field.field_id === 582983 && field.values?.length) {
-          currentCorrectionId = field.values[0].enum_id || field.values[0].value;
-          currentCorrectionName = CORRECTION_FIELD_NAMES[currentCorrectionId] || field.values[0].value;
-        }
+        if (field.field_id === 575965 && field.values?.length) currentCategory = field.values[0].enum_id;
       }
 
-      // 📦 СОБИРАЕМ ЕДИНЫЙ ОБЪЕКТ ДЛЯ PATCH-ЗАПРОСА
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // --- БЛОК 142 (Купил) ---
+      // --- Статус 142 (Купил) ---
       if (pipelineId === 5276629 && newStatusId === 142) {
-        console.log("🧹 Processing status 142 (Купил)");
-        customFieldsUpdates.push({ field_id: 573457, values: null }); // Очистка причины отказа
+        console.log("🧹 Status 142: clearing reject reason + setting request type");
+        customFieldsUpdates.push({ field_id: 573457, values: null });
 
         let targetRequestType = null;
         if (currentCategory) {
@@ -194,70 +213,51 @@ export default {
           else if (currentCategory === 974783) targetRequestType = 957159;
         }
         if (targetRequestType) {
-          console.log(`✅ Setting request type to ${targetRequestType}`);
           customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
         }
       }
 
-      // --- БЛОК СМЕНЫ ОТВЕТСТВЕННОГО ---
-      const matchedRule = RULES.find(rule => 
+      // --- Смена ответственного по RULES ---
+      const matchedRule = RULES.find(rule =>
         rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
         rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
       );
 
       if (matchedRule && userId && actualResponsibleId !== userId) {
-        console.log(`✅ RULE MATCHED! Updating responsible: ${actualResponsibleId} → ${userId}`);
+        console.log(`✅ RULE MATCHED! Responsible: ${actualResponsibleId} → ${userId}`);
         patchPayload.responsible_user_id = userId;
-      } else if (!matchedRule) {
-        console.log("⏭️ No matching rule for responsible update");
       }
 
-      // --- БЛОК ОБНОВЛЕНИЯ ДАТЫ ---
+      // --- Обновление даты ---
       if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 &&
           [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
-        const today = new Date(new Date().setHours(0,0,0,0));
+        const today = new Date(new Date().setHours(0, 0, 0, 0));
         patchPayload.created_at = Math.floor(today.getTime() / 1000);
         console.log("📅 Updating created_at to today");
       }
 
-      // --- БЛОК ПРОВЕРКИ ПОЛЯ КОРРЕКТИРОВКА (ПО ФИО) ---
-      const responsibleName = RESPONSIBLE_USER_NAMES[actualResponsibleId];
-      if (responsibleName && currentCorrectionName && currentCorrectionName === responsibleName && currentCorrectionId !== 983499) {
-        console.log(`✅ Names match (${responsibleName}). Setting correction field to 'Не требуется' (983499)`);
-        customFieldsUpdates.push({ field_id: 582983, values: [{ enum_id: 983499 }] });
-      } else if (responsibleName && currentCorrectionName) {
-        console.log(`⏭️ Names do not match: responsible=${responsibleName}, correction=${currentCorrectionName}`);
-      } else {
-        console.log(`⏭️ Skipping correction field check (no name in mapping or empty)`);
-      }
+      // --- Проверка корректировки ---
+      const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
+      if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
 
-      // 🚀 ОТПРАВЛЯЕМ ОДИН ОБЪЕДИНЕННЫЙ PATCH-ЗАПРОС (ЕСЛИ ЕСТЬ ЧТО МЕНЯТЬ)
+      // --- Один объединённый PATCH ---
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
-        if (customFieldsUpdates.length > 0) {
-          patchPayload.custom_fields_values = customFieldsUpdates;
-        }
+        if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
-        console.log("🚀 Sending COMBINED PATCH:", JSON.stringify(patchPayload, null, 2));
-
+        console.log("🚀 Sending COMBINED PATCH");
         const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
-          headers: { 
-            Authorization: `Bearer ${env.AMO_TOKEN}`, 
-            "Content-Type": "application/json", 
-            Accept: "application/json" 
-          },
+          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(patchPayload)
         });
 
         if (!updateRes.ok) {
-          const errorText = await updateRes.text();
-          console.log("❌ COMBINED PATCH ERROR:", errorText);
+          console.log("❌ COMBINED PATCH ERROR:", await updateRes.text());
           return new Response("ERROR", { status: 500 });
-        } else {
-          console.log("✅ COMBINED PATCH SUCCESS");
         }
+        console.log("✅ COMBINED PATCH SUCCESS");
       } else {
-        console.log("⏭️ No updates needed for this status change");
+        console.log("⏭️ No updates needed");
       }
 
       return new Response("OK");
