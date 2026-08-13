@@ -25,7 +25,79 @@ const CORRECTION_FIELD_NAMES = {
   983525: "Даниил Бровкин", 983527: "Михаил Кострюков"
 };
 
-// 🆕 Общая функция проверки корректировки по ФИО
+// ===== БЮДЖЕТ =====
+const DISCOUNT_NONE = 972987;
+const AIRPODS_MAX = 975969;
+
+const BUDGET_IPHONE_BY_PACKAGE = { 982597: 1000, 982599: 2000, 982601: 2500 };
+
+const BUDGET_AKSY = {
+  972987: 1000, 981917: 700, 981919: 450, 972989: 450,
+  976369: 950, 976371: 950, 976373: 850, 976375: 450
+};
+
+const BUDGET_HARDWARE = {
+  972987: 2300, 981917: 1610, 981919: 1035, 972989: 1035,
+  976369: 2185, 976371: 2185, 976373: 1955, 976375: 1035
+};
+
+const BUDGET_BU = {
+  972987: 2500, 981917: 1750, 981919: 1125, 972989: 1125,
+  976369: 2375, 976371: 2375, 976373: 2125, 976375: 1125
+};
+
+const ACCESSORIES = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
+const HARDWARE_MODELS = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
+const ANDROID_MODELS = [975979, 976893];
+const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
+
+function deriveCategory(type, model, currentCategory) {
+  let target = currentCategory;
+  if (type === 938373) target = 974781;
+  else if (type === 957159) target = 974783;
+  else if (type === 931809) {
+    if (IPHONES.includes(model)) target = 974775;
+    else if (ACCESSORIES.includes(model)) target = 974777;
+    else if (HARDWARE_MODELS.includes(model)) target = 974779;
+    else if (ANDROID_MODELS.includes(model)) target = 982623;
+  }
+  return target;
+}
+
+function derivePackage(type, model, currentPackage) {
+  let target = currentPackage;
+  if (type === 938373) target = 982611;
+  else if (type === 957159) target = 982607;
+  else if (type === 931809) {
+    if (ACCESSORIES.includes(model)) target = 982613;
+    else if (HARDWARE_MODELS.includes(model)) target = 982619;
+  }
+  return target;
+}
+
+// Расчёт бюджета. Возвращает { budget, forceNoDiscount }
+function calcBudget(category, model, discount, soldPackage) {
+  let budget = null;
+  let forceNoDiscount = false;
+
+  if (category === 974775) {
+    forceNoDiscount = true;
+    budget = BUDGET_IPHONE_BY_PACKAGE[soldPackage] ?? null;
+  } else if (category === 974783) {
+    budget = 1500;
+  } else {
+    let table = null;
+    if (category === 974777) table = (model === AIRPODS_MAX) ? BUDGET_HARDWARE : BUDGET_AKSY;
+    else if (category === 974779) table = BUDGET_HARDWARE;
+    else if (category === 974781 || category === 982623) table = BUDGET_BU;
+
+    if (table && discount != null) budget = table[discount] ?? null;
+    // 981921, 974067, 976377, 979856 и пустые значения → null → бюджет не трогаем
+  }
+
+  return { budget, forceNoDiscount };
+}
+
 function getCorrectionUpdate(fields, responsibleId) {
   let currentCorrectionId = null;
   let currentCorrectionName = null;
@@ -51,7 +123,6 @@ function getCorrectionUpdate(fields, responsibleId) {
     return { field_id: 582983, values: [{ enum_id: 983499 }] };
   }
 
-  console.log("⏭️ Correction update not needed");
   return null;
 }
 
@@ -75,10 +146,10 @@ export default {
 
       // =========================
       // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
-      //    Категория товара + ПРОВЕРКА КОРРЕКТИРОВКИ
+      //    Категория + корректировка. Бюджет здесь НЕ трогаем.
       // =========================
       if (params.has("leads[update][0][id]")) {
-        console.log("📦 UPDATE EVENT (fields/responsible)");
+        console.log("📦 UPDATE EVENT");
 
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
@@ -103,24 +174,10 @@ export default {
           if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
         }
 
-        let targetCategory = currentCategory;
-        let targetPackage = currentPackage;
+        const targetCategory = deriveCategory(type, model, currentCategory);
+        const targetPackage = derivePackage(type, model, currentPackage);
+
         let soldPackage = null;
-
-        if (type === 938373) { targetCategory = 974781; targetPackage = 982611; }
-        else if (type === 957159) { targetCategory = 974783; targetPackage = 982607; }
-        else if (type === 931809) {
-          const accessories = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
-          const hardware = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
-          const android = [975979, 976893];
-          const iphones = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
-
-          if (iphones.includes(model)) targetCategory = 974775;
-          else if (accessories.includes(model)) { targetCategory = 974777; targetPackage = 982613; }
-          else if (hardware.includes(model)) { targetCategory = 974779; targetPackage = 982619; }
-          else if (android.includes(model)) targetCategory = 982623;
-        }
-
         if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
           if (currentPackage === 982607) soldPackage = 982609;
           else if (currentPackage === 982611) soldPackage = 982617;
@@ -140,12 +197,11 @@ export default {
           custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
         }
 
-        // 🆕 Проверка корректировки ТЕПЕРЬ и здесь
         const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
         if (correctionUpdate) custom_fields_values.push(correctionUpdate);
 
         if (custom_fields_values.length === 0) {
-          console.log("⏭️ Nothing to update (category + correction already correct)");
+          console.log("⏭️ Nothing to update");
           return new Response("OK");
         }
 
@@ -180,7 +236,6 @@ export default {
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
 
-      // Один GET на все проверки
       const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
       });
@@ -193,27 +248,47 @@ export default {
       const fields = leadData.custom_fields_values || [];
       const actualResponsibleId = leadData.responsible_user_id;
 
-      let currentCategory = null;
+      let type = null, model = null, currentCategory = null, currentDiscount = null, currentSoldPackage = null;
       for (const field of fields) {
-        if (field.field_id === 575965 && field.values?.length) currentCategory = field.values[0].enum_id;
+        if (!field.values?.length) continue;
+        if (field.field_id === 466253) type = field.values[0].enum_id;
+        if (field.field_id === 577689) model = field.values[0].enum_id;
+        if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+        if (field.field_id === 574827) currentDiscount = field.values[0].enum_id;
+        if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
       }
 
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // --- Статус 142 (Купил) ---
+      // --- Статус 142 (Купил): причина отказа, тип запроса, БЮДЖЕТ (один раз) ---
       if (pipelineId === 5276629 && newStatusId === 142) {
-        console.log("🧹 Status 142: clearing reject reason + setting request type");
+        console.log("🧹 Status 142 processing");
         customFieldsUpdates.push({ field_id: 573457, values: null });
 
+        const effectiveCategory = deriveCategory(type, model, currentCategory);
+
         let targetRequestType = null;
-        if (currentCategory) {
-          if ([974775, 974777, 974779, 982623].includes(currentCategory)) targetRequestType = 931809;
-          else if (currentCategory === 974781) targetRequestType = 938373;
-          else if (currentCategory === 974783) targetRequestType = 957159;
+        if (effectiveCategory) {
+          if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
+          else if (effectiveCategory === 974781) targetRequestType = 938373;
+          else if (effectiveCategory === 974783) targetRequestType = 957159;
         }
         if (targetRequestType) {
           customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
+        }
+
+        // 💰 БЮДЖЕТ: ставится ТОЛЬКО здесь, один раз. Потом не правится никогда.
+        const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage);
+
+        if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
+          console.log("🧾 iPhone: forcing discount to 'Без скидки'");
+          customFieldsUpdates.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
+        }
+
+        if (budget != null && leadData.price !== budget) {
+          console.log(`💰 Setting budget once: ${leadData.price} → ${budget}`);
+          patchPayload.price = budget;
         }
       }
 
