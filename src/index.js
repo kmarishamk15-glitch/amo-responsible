@@ -199,7 +199,7 @@ async function getLeadContactInfo(env, leadId) {
   }
 }
 
-// 100% БЕЗОПАСНЫЙ перенос примечаний (защита от Unexpected end of JSON input)
+// 100% БЕЗОПАСНЫЙ перенос примечаний (с массивом для amoCRM v4)
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
     const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
@@ -207,7 +207,6 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
     });
     if (!res.ok) return 0;
 
-    // Читаем как текст, чтобы избежать краша на пустом ответе
     const text = await res.text();
     if (!text || text.trim() === "") return 0;
 
@@ -215,7 +214,6 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
     try {
       data = JSON.parse(text);
     } catch (e) {
-      console.log(`⚠️ [Дубликаты] Не JSON ответ при чтении примечаний ${fromLeadId}`);
       return 0;
     }
 
@@ -223,11 +221,12 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
     let count = 0;
     
     for (const note of notes) {
-      const payload = {
+      // amoCRM v4 требует МАССИВ объектов при создании
+      const payload = [{
         note_type: note.note_type,
         text: note.text || "",
         params: note.params || {}
-      };
+      }];
 
       const createRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
@@ -244,18 +243,21 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
 
 async function createMergeTask(env, leadId, responsibleUserId, taskText) {
   try {
+    // amoCRM v4 требует МАССИВ объектов при создании задач
+    const payload = [{
+      entity_type: "leads",
+      entity_id: leadId,
+      task_type: "call",
+      text: taskText,
+      responsible_user_id: responsibleUserId,
+      duration: 300,
+      complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
+    }];
+
     await fetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        entity_type: "leads",
-        entity_id: leadId,
-        task_type: "call",
-        text: taskText,
-        responsible_user_id: responsibleUserId,
-        duration: 300,
-        complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
-      })
+      body: JSON.stringify(payload)
     });
   } catch (e) {
     console.log("❌ Ошибка создания задачи:", e.message);
@@ -290,7 +292,17 @@ async function handleDuplicates(env, currentLeadId) {
   );
   
   if (!leadsRes.ok) return;
-  const leadsData = await leadsRes.json();
+  
+  const leadsText = await leadsRes.text();
+  if (!leadsText || leadsText.trim() === "") return;
+  
+  let leadsData;
+  try {
+    leadsData = JSON.parse(leadsText);
+  } catch (e) {
+    return;
+  }
+  
   const allLeads = leadsData._embedded?.leads || [];
 
   // Ищем СТАРУЮ сделку (Техника, 143, нужный тип), которая НЕ является текущей
@@ -329,9 +341,11 @@ async function handleDuplicates(env, currentLeadId) {
 
   console.log(`🔄 [Дубликаты] ШАГ 3: УДАЛЯЕМ НОВУЮ сделку (${currentLeadId})...`);
   try {
-    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
+    // В amoCRM v4 удаление делается через DELETE /leads с массивом ID в теле!
+    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}` }
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify([{ id: currentLeadId }])
     });
     if (delRes.ok) {
       console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно УДАЛЕНА`);
