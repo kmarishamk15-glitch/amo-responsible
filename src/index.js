@@ -274,10 +274,12 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
 }
 
 // ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ =====
+// ===== ЗАМЕНИТЕ ФУНКЦИЮ handleDuplicates ПОЛНОСТЬЮ =====
+
 async function handleDuplicates(env, currentLeadId) {
   console.log(`🔍 [Дубликаты] Проверка новой сделки: ${currentLeadId}`);
 
-  await sleep(2000); // Ждем привязки контакта
+  await sleep(2000);
 
   const { phone, contactId } = await getLeadContactInfo(env, currentLeadId);
   if (!phone || !contactId) {
@@ -344,28 +346,31 @@ async function handleDuplicates(env, currentLeadId) {
     });
     console.log(`✅ [Дубликаты] Контакт откреплен от НОВОЙ сделки`);
   } catch (e) {
-    console.log("⚠️ [Дубликаты] Ошибка открепления:", e.message);
+    console.log("️ [Дубликаты] Ошибка открепления:", e.message);
   }
 
-  console.log(`🔄 [Дубликаты] ШАГ 3: УДАЛЯЕМ НОВУЮ сделку (${currentLeadId})...`);
+  console.log(`🔄 [Дубликаты] ШАГ 3: УДАЛЯЕМ НОВУЮ сделку (${currentLeadId}) через PATCH...`);
   try {
-    // Пробуем удалить конкретный лид по ID (надежнее, чем массовое удаление)
+    // В amoCRM v4 удаление делается через PATCH с is_deleted: true
     const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}` }
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ is_deleted: true })
     });
     
-    if (delRes.ok) {
+    const delText = await delRes.text();
+    console.log(` Ответ на удаление: ${delRes.status} - ${delText}`);
+    
+    if (delRes.ok || delRes.status === 204) {
       console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно УДАЛЕНА`);
     } else {
-      const errText = await delRes.text();
-      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}. Ответ: ${errText}`);
+      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}`);
     }
   } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
+    console.log(" [Дубликаты] Ошибка удаления:", e.message);
   }
 
-  console.log(`🔄 [Дубликаты] ШАГ 4: Создаем задачи на СТАРОЙ сделке (${oldLead.id})...`);
+  console.log(` [Дубликаты] ШАГ 4: Создаем задачи на СТАРОЙ сделке (${oldLead.id})...`);
   const taskText = `🔄 Объединение: примечания перенесены из удаленной новой сделки #${currentLeadId}`;
   
   await createMergeTask(env, oldLead.id, oldLead.responsible_user_id, taskText);
