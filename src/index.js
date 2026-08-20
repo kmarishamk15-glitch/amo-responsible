@@ -43,7 +43,6 @@ const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
 const TEST_PHONE_NUMBER = "+79991409013"; // ⚠️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
 const TECHNIQUE_PIPELINE_ID = 5276629;
 const OLD_STATUS_ID = 143; // Закрыто и не реализовано
-const NEW_STATUS_ID = 47054479; // Клиент заинтересован в покупке
 const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811];
 const RGP_USER_IDS = [8517166, 8789956]; // Михаил Кострюков, Даниил Бровкин
 
@@ -198,7 +197,6 @@ async function getLeadContactInfo(env, leadId) {
     }
     
     const contactData = await contactRes.json();
-    console.log(`📞 [Дубликаты] Поля контакта:`, JSON.stringify(contactData.custom_fields_values));
 
     for (const field of contactData.custom_fields_values || []) {
       if (field.values && field.values.length > 0) {
@@ -220,29 +218,53 @@ async function getLeadContactInfo(env, leadId) {
   }
 }
 
+// БЕЗОПАСНЫЙ перенос примечаний (защита от Unexpected end of JSON input)
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
+    console.log(`📝 [Дубликаты] Чтение примечаний из сделки ${fromLeadId} для переноса в ${toLeadId}...`);
     const notesRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    if (!notesRes.ok) return 0;
     
-    const notesData = await notesRes.json();
-    const notes = notesData._embedded?.notes || [];
-    let migratedCount = 0;
+    if (!notesRes.ok) {
+      console.log(`⚠️ [Дубликаты] Не удалось получить примечания из ${fromLeadId}: ${notesRes.status}`);
+      return 0;
+    }
 
+    let notesData;
+    try {
+      notesData = await notesRes.json();
+    } catch (e) {
+      console.log(`❌ [Дубликаты] Ошибка парсинга JSON примечаний из ${fromLeadId}:`, e.message);
+      return 0;
+    }
+
+    const notes = notesData._embedded?.notes || [];
+    console.log(`📋 [Дубликаты] Найдено примечаний для переноса: ${notes.length}`);
+    
+    let migratedCount = 0;
     for (const note of notes) {
-      const payload = { note_type: note.note_type, text: note.text, params: note.params || {} };
+      const payload = {
+        note_type: note.note_type,
+        text: note.text || "",
+        params: note.params || {}
+      };
+
       const createRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(payload)
       });
-      if (createRes.ok) migratedCount++;
+
+      if (createRes.ok) {
+        migratedCount++;
+      } else {
+        console.log(`⚠️ [Дубликаты] Не удалось создать примечание в ${toLeadId}`);
+      }
     }
     return migratedCount;
   } catch (e) {
-    console.log("❌ Ошибка переноса примечаний:", e.message);
+    console.log("❌ [Дубликаты] Критическая ошибка переноса примечаний:", e.message);
     return 0;
   }
 }
@@ -271,24 +293,25 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
   }
 }
 
+// ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ =====
 async function handleDuplicates(env, currentLeadId) {
-  console.log(` [Дубликаты] Проверка лида: ${currentLeadId}`);
+  console.log(`🔍 [Дубликаты] Проверка лида: ${currentLeadId}`);
 
-  //  ВАЖНО: Ждем 2 секунды, чтобы контакт успел привязаться к сделке
+  // Ждем 2 секунды, чтобы контакт успел привязаться к сделке
   console.log(`⏳ [Дубликаты] Ожидание 2 секунды для привязки контакта...`);
   await sleep(2000);
 
   const { phone, contactId } = await getLeadContactInfo(env, currentLeadId);
   if (!phone || !contactId) {
-    console.log("️ [Дубликаты] Телефон или контакт не найден, пропускаю");
+    console.log("⏭️ [Дубликаты] Телефон или контакт не найден, пропускаю");
     return;
   }
 
   console.log(`📞 [Дубликаты] Итоговый телефон: ${phone}, Контакт ID: ${contactId}`);
 
-  // ️ ВРЕМЕННАЯ ПРОВЕРКА ДЛЯ ТЕСТА (УДАЛИТЬ ПОСЛЕ ТЕСТИРОВАНИЯ)
+  // ⚠️ ВРЕМЕННАЯ ПРОВЕРКА ДЛЯ ТЕСТА (УДАЛИТЬ ПОСЛЕ ТЕСТИРОВАНИЯ)
   if (phone !== TEST_PHONE_NUMBER) {
-    console.log(`️ [Дубликаты] Телефон ${phone} не является тестовым (${TEST_PHONE_NUMBER}), пропускаю`);
+    console.log(`⏭️ [Дубликаты] Телефон ${phone} не является тестовым (${TEST_PHONE_NUMBER}), пропускаю`);
     return;
   }
 
@@ -296,7 +319,6 @@ async function handleDuplicates(env, currentLeadId) {
   const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
   const fromDate = Math.floor(oneMonthAgo.getTime() / 1000);
 
-  // Получаем все сделки контакта через filter[contact_id]
   const leadsRes = await fetch(
     `https://${env.AMO_DOMAIN}/api/v4/leads?filter[contact_id]=${contactId}&filter[created_at][from]=${fromDate}&limit=250`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
@@ -309,7 +331,6 @@ async function handleDuplicates(env, currentLeadId) {
   
   const leadsData = await leadsRes.json();
   const allLeads = leadsData._embedded?.leads || [];
-
   console.log(`📋 [Дубликаты] Найдено сделок у контакта за месяц: ${allLeads.length}`);
 
   // Ищем СТАРУЮ сделку (Техника, 143, нужный тип запроса), которая НЕ является текущей
@@ -328,72 +349,54 @@ async function handleDuplicates(env, currentLeadId) {
     return;
   }
 
-  console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка: ${oldLead.id}. Переносим данные в НОВУЮ: ${currentLeadId}`);
+  console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка: ${oldLead.id}.`);
+  console.log(`🔄 [Дубликаты] НАЧИНАЕМ ПЕРЕНОС: Из НОВОЙ (${currentLeadId}) В СТАРУЮ (${oldLead.id})`);
 
-  // 1. Переносим примечания ИЗ старой В новую
-  const migratedCount = await migrateNotes(env, oldLead.id, currentLeadId);
-  console.log(` [Дубликаты] Перенесено примечаний: ${migratedCount}`);
+  // ШАГ 1: Переносим примечания ИЗ НОВОЙ В СТАРУЮ
+  const migratedCount = await migrateNotes(env, currentLeadId, oldLead.id);
+  console.log(`✅ [Дубликаты] Перенесено примечаний: ${migratedCount}`);
 
-  // 2. Открепляем контакт от СТАРОЙ сделки
+  // ШАГ 2: Открепляем контакт ОТ НОВОЙ сделки
   try {
-    await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${oldLead.id}/links`, {
+    console.log(`🔗 [Дубликаты] Открепляем контакт ${contactId} от НОВОЙ сделки ${currentLeadId}...`);
+    const detachRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ to: [{ id: contactId, type: "contacts" }] })
     });
-    console.log("🔗 [Дубликаты] Контакт откреплен от старой сделки");
+    if (detachRes.ok) {
+      console.log(`✅ [Дубликаты] Контакт успешно откреплен от новой сделки`);
+    } else {
+      console.log(`⚠️ [Дубликаты] Не удалось открепить контакт: ${detachRes.status}`);
+    }
   } catch (e) {
     console.log("⚠️ [Дубликаты] Ошибка открепления контакта:", e.message);
   }
 
-  // 3. Удаляем СТАРУЮ сделку
+  // ШАГ 3: Удаляем НОВУЮ сделку
   try {
-    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${oldLead.id}`, {
+    console.log(`🗑️ [Дубликаты] Удаляем НОВУЮ сделку ${currentLeadId}...`);
+    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}` }
     });
     if (delRes.ok) {
-      console.log(`🗑️ [Дубликаты] Старая сделка ${oldLead.id} успешно удалена`);
+      console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно удалена`);
     } else {
-      console.log("❌ [Дубликаты] Не удалось удалить старую сделку");
+      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}`);
     }
   } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка удаления старой сделки:", e.message);
+    console.log("❌ [Дубликаты] Ошибка удаления новой сделки:", e.message);
   }
 
-  // 4. Перемещаем НОВУЮ сделку в Технику на этап 47054479
-  try {
-    const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pipeline_id: TECHNIQUE_PIPELINE_ID,
-        status_id: NEW_STATUS_ID
-      })
-    });
-    if (patchRes.ok) {
-      console.log(` [Дубликаты] Новая сделка ${currentLeadId} перемещена в Технику, этап 47054479`);
-    } else {
-      console.log("❌ [Дубликаты] Ошибка перемещения новой сделки");
-    }
-  } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка перемещения:", e.message);
-  }
-
-  // 5. Создаем задачи на НОВОЙ сделке
-  const newLeadDataRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
-    headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-  });
-  const newLeadData = await newLeadDataRes.json();
-  const responsibleId = newLeadData.responsible_user_id;
-
-  const taskText = `🔄 Объединение дубля: примечания перенесены из удаленной старой сделки #${oldLead.id}`;
+  // ШАГ 4: Создаем задачи на СТАРОЙ сделке (так как она осталась и требует внимания)
+  const taskText = `🔄 Объединение дубля: примечания и звонки перенесены из удаленной новой сделки #${currentLeadId}`;
   
-  await createMergeTask(env, currentLeadId, responsibleId, taskText);
-  console.log(`📌 [Дубликаты] Задача создана для ответственного: ${responsibleId}`);
+  await createMergeTask(env, oldLead.id, oldLead.responsible_user_id, taskText);
+  console.log(`📌 [Дубликаты] Задача создана для ответственного старой сделки: ${oldLead.responsible_user_id}`);
 
   for (const rgpId of RGP_USER_IDS) {
-    await createMergeTask(env, currentLeadId, rgpId, `🔔 Контроль РГП: перенос сделки из Услуги в Технику. Старая сделка #${oldLead.id} удалена.`);
+    await createMergeTask(env, oldLead.id, rgpId, `🔔 Контроль РГП: новая сделка #${currentLeadId} удалена, данные перенесены в старую #${oldLead.id}`);
     console.log(`📌 [Дубликаты] Задача создана для РГП: ${rgpId}`);
   }
 
