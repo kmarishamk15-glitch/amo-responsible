@@ -139,7 +139,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
+    console.log(`${logPrefix}  iPhone: forcing discount to 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
@@ -201,7 +201,7 @@ async function getLeadContactInfo(env, leadId) {
 
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
-    console.log(`📥 Чтение примечаний ИЗ сделки ID: ${fromLeadId}`);
+    console.log(` Чтение примечаний ИЗ сделки ID: ${fromLeadId}`);
     const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
@@ -222,7 +222,6 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
     
     for (const note of notes) {
       const clearText = note.text || "Без текста";
-      // Добавляем маркер, чтобы было видно, что это перенос
       const payload = [{
         note_type: note.note_type || 1,
         text: `🔄 [ПЕРЕНОС ИЗ СДЕЛКИ #${fromLeadId}]: ${clearText}`,
@@ -273,7 +272,7 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
     console.log(`📌 ОТВЕТ amoCRM на задачу: ${res.status} - ${resText}`);
     
     if (!res.ok) {
-      console.log(`⚠️ Не удалось создать задачу`);
+      console.log(`️ Не удалось создать задачу`);
     }
   } catch (e) {
     console.log("❌ Ошибка создания задачи:", e.message);
@@ -320,19 +319,55 @@ async function handleDuplicates(env, currentLeadId) {
   }
   
   const allLeads = leadsData._embedded?.leads || [];
+  console.log(`📋 [Дубликаты] Найдено сделок у контакта: ${allLeads.length}`);
 
-  const oldLead = allLeads.find(lead => {
-    if (lead.id === currentLeadId) return false;
-    if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) return false;
-    if (lead.status_id !== OLD_STATUS_ID) return false;
+  // 🔥 Ищем старую сделку И СРАЗУ проверяем наличие контакта
+  let oldLead = null;
+  for (const lead of allLeads) {
+    if (lead.id === currentLeadId) {
+      console.log(`️ Пропускаем текущую сделку ${lead.id}`);
+      continue;
+    }
+    if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) {
+      console.log(`⏭️ Сделка ${lead.id}: не та воронка (${lead.pipeline_id})`);
+      continue;
+    }
+    if (lead.status_id !== OLD_STATUS_ID) {
+      console.log(`️ Сделка ${lead.id}: не тот статус (${lead.status_id})`);
+      continue;
+    }
 
     const reqTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
     const reqType = reqTypeField?.values?.[0]?.enum_id;
-    return reqType && TARGET_REQUEST_TYPES.includes(reqType);
-  });
+    if (!reqType || !TARGET_REQUEST_TYPES.includes(reqType)) {
+      console.log(`️ Сделка ${lead.id}: не тот тип запроса (${reqType})`);
+      continue;
+    }
+
+    // 🔥 ПРОВЕРЯЕМ, что контакт действительно привязан к этой сделке
+    console.log(`🔍 Проверяем сделку ${lead.id} на наличие контакта ${contactId}...`);
+    try {
+      const checkRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${lead.id}?with=contacts`, {
+        headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+      });
+      const checkData = await checkRes.json();
+      const contacts = checkData._embedded?.contacts || [];
+      const hasContact = contacts.some(c => c.id === parseInt(contactId));
+      
+      if (hasContact) {
+        console.log(`✅ [Дубликаты] Сделка ${lead.id} подходит и имеет контакт ${contactId}`);
+        oldLead = lead;
+        break;
+      } else {
+        console.log(`⏭️ Сделка ${lead.id} не имеет контакта ${contactId}, пропускаем`);
+      }
+    } catch (e) {
+      console.log(`⚠️ Ошибка проверки сделки ${lead.id}:`, e.message);
+    }
+  }
 
   if (!oldLead) {
-    console.log("⏭️ [Дубликаты] Старая сделка в Технике (143) не найдена.");
+    console.log("⏭️ [Дубликаты] Не найдена старая сделка с контактом в Технике (143).");
     return;
   }
 
@@ -360,7 +395,7 @@ async function handleDuplicates(env, currentLeadId) {
       console.log(`⚠️ [Дубликаты] Ошибка открепления контакта`);
     }
   } catch (e) {
-    console.log("⚠️ [Дубликаты] Ошибка открепления:", e.message);
+    console.log("️ [Дубликаты] Ошибка открепления:", e.message);
   }
 
   console.log(`🔄 [Дубликаты] ШАГ 3: Удаление новой сделки...`);
@@ -381,7 +416,7 @@ async function handleDuplicates(env, currentLeadId) {
       console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}`);
     }
   } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
+    console.log(" [Дубликаты] Ошибка удаления:", e.message);
   }
 
   console.log(`🔄 [Дубликаты] ШАГ 4: Создание задач...`);
