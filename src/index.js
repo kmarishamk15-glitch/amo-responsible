@@ -54,7 +54,8 @@ const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
 // ===== ДУБЛИ (Сущи) =====
 const TEST_PHONE_NUMBER = "+79991409013"; // ⚠️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
 const TARGET_PIPELINE_ID = 5276629;
-const TARGET_STATUS_IDS = [47054479, 53410254, 53780378, 53410258];
+const TARGET_STATUS_IDS = [143]; // Только "Закрыто и не реализовано"
+const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811]; // Типы запроса для проверки на сущ
 const RGP_USER_IDS = [8517166, 8789956]; // Михаил Кострюков, Даниил Бровкин
 
 function deriveCategory(type, model, currentCategory) {
@@ -125,7 +126,7 @@ function getCorrectionUpdate(fields, responsibleId) {
 
   const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
 
-  console.log(` Correction check: responsible = ${responsibleName || responsibleId}, correction = ${currentCorrectionName || currentCorrectionId || "empty"}`);
+  console.log(`🔍 Correction check: responsible = ${responsibleName || responsibleId}, correction = ${currentCorrectionName || currentCorrectionId || "empty"}`);
 
   if (
     responsibleName &&
@@ -160,7 +161,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
+    console.log(`${logPrefix}  iPhone: forcing discount to 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
@@ -273,7 +274,7 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
 }
 
 async function handleDuplicates(env, currentLeadId) {
-  console.log(`🔍 [Duplicates] Checking lead: ${currentLeadId}`);
+  console.log(` [Duplicates] Checking lead: ${currentLeadId}`);
 
   const phone = await getPhoneFromLead(env, currentLeadId);
   if (!phone) {
@@ -281,7 +282,7 @@ async function handleDuplicates(env, currentLeadId) {
     return;
   }
 
-  console.log(`📞 [Duplicates] Phone: ${phone}`);
+  console.log(` [Duplicates] Phone: ${phone}`);
 
   // ⚠️ ВРЕМЕННАЯ ПРОВЕРКА ДЛЯ ТЕСТА (УДАЛИТЬ ПОСЛЕ ТЕСТИРОВАНИЯ)
   if (phone !== TEST_PHONE_NUMBER) {
@@ -300,14 +301,20 @@ async function handleDuplicates(env, currentLeadId) {
   const leadsData = await leadsRes.json();
   const allLeads = leadsData._embedded?.leads || [];
 
-  console.log(` [Duplicates] Found ${allLeads.length} total leads for contact in last month`);
+  console.log(`📋 [Duplicates] Found ${allLeads.length} total leads for contact in last month`);
 
-  const validLeads = allLeads.filter(lead =>
-    lead.pipeline_id === TARGET_PIPELINE_ID &&
-    TARGET_STATUS_IDS.includes(lead.status_id)
-  );
+  // Фильтруем по воронке, этапу 143 И типу запроса
+  const validLeads = allLeads.filter(lead => {
+    if (lead.pipeline_id !== TARGET_PIPELINE_ID) return false;
+    if (!TARGET_STATUS_IDS.includes(lead.status_id)) return false;
 
-  console.log(`✅ [Duplicates] Found ${validLeads.length} valid leads in target pipeline/statuses`);
+    // Проверяем тип запроса
+    const requestTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
+    const requestType = requestTypeField?.values?.[0]?.enum_id;
+    return requestType && TARGET_REQUEST_TYPES.includes(requestType);
+  });
+
+  console.log(`✅ [Duplicates] Found ${validLeads.length} valid leads in pipeline ${TARGET_PIPELINE_ID}, status 143, with target request types`);
 
   if (validLeads.length < 2) {
     console.log("⏭️ [Duplicates] Less than 2 valid leads, nothing to merge");
@@ -327,7 +334,7 @@ async function handleDuplicates(env, currentLeadId) {
   console.log(`🔄 [Duplicates] Merging NEW lead ${newLead.id} INTO OLD lead ${oldLead.id}`);
 
   const migratedCount = await migrateNotes(env, newLead.id, oldLead.id);
-  console.log(`📝 [Duplicates] Migrated ${migratedCount} notes`);
+  console.log(` [Duplicates] Migrated ${migratedCount} notes`);
 
   try {
     await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${newLead.id}/links`, {
@@ -338,7 +345,7 @@ async function handleDuplicates(env, currentLeadId) {
       },
       body: JSON.stringify({ to: [{ id: newLead.responsible_user_id, type: "contacts" }] })
     });
-    console.log(" [Duplicates] Detached contact from new lead");
+    console.log("🔗 [Duplicates] Detached contact from new lead");
   } catch (e) {
     console.log("⚠️ [Duplicates] Could not detach contact:", e.message);
   }
@@ -360,7 +367,7 @@ async function handleDuplicates(env, currentLeadId) {
   const taskText = `🔄 Объединение дубля: примечания и звонки перенесены из удаленной сделки #${newLead.id}`;
 
   await createMergeTask(env, oldLead.id, oldLead.responsible_user_id, taskText);
-  console.log(` [Duplicates] Task created for responsible: ${oldLead.responsible_user_id}`);
+  console.log(`📌 [Duplicates] Task created for responsible: ${oldLead.responsible_user_id}`);
 
   for (const rgpId of RGP_USER_IDS) {
     await createMergeTask(env, oldLead.id, rgpId, `🔔 Контроль РГП: объединение сделок #${newLead.id} → #${oldLead.id}`);
@@ -480,7 +487,7 @@ export default {
         return new Response("OK");
       }
 
-      console.log("📋 Event type: STATUS CHANGE");
+      console.log(" Event type: STATUS CHANGE");
 
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
@@ -533,7 +540,7 @@ export default {
         }
 
         const promo = isPromo(leadData.name);
-        if (promo) console.log(" Promo deal detected → budget x2");
+        if (promo) console.log("🎯 Promo deal detected → budget x2");
 
         const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
         customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
