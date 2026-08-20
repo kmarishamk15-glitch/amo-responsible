@@ -164,37 +164,34 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function getLeadContactInfo(env, leadId) {
+// Функция поиска контакта по телефону (как в вашем рабочем Node.js примере)
+async function findContactByPhone(env, phone) {
   try {
-    const leadRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-    });
-    if (!leadRes.ok) return { phone: null, contactId: null };
+    const normalizedPhone = phone.replace(/\D/g, "");
+    const searchRes = await rateLimitedFetch(
+      `https://${env.AMO_DOMAIN}/api/v4/contacts?query=${encodeURIComponent(normalizedPhone)}&limit=10`,
+      { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
+    );
     
-    const leadData = await leadRes.json();
-    const contacts = leadData._embedded?.contacts || [];
-    if (contacts.length === 0) return { phone: null, contactId: null };
-
-    const contactId = contacts[0].id;
-    const contactRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}`, {
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-    });
-    if (!contactRes.ok) return { phone: null, contactId };
+    if (!searchRes.ok) return null;
+    const searchData = await searchRes.json();
+    const contacts = searchData._embedded?.contacts || [];
     
-    const contactData = await contactRes.json();
-    for (const field of contactData.custom_fields_values || []) {
-      if (field.values && field.values.length > 0) {
-        const val = String(field.values[0].value);
-        const normalized = normalizePhone(val);
-        if (normalized) {
-          return { phone: '+7' + normalized.slice(1), contactId };
+    for (const contact of contacts) {
+      for (const field of contact.custom_fields_values || []) {
+        if (field.values && field.values.length > 0) {
+          const val = String(field.values[0].value);
+          const contactPhoneNorm = val.replace(/\D/g, "");
+          if (contactPhoneNorm === normalizedPhone) {
+            return contact.id;
+          }
         }
       }
     }
-    return { phone: null, contactId };
+    return null;
   } catch (e) {
-    console.log("❌ Ошибка getLeadContactInfo:", e.message);
-    return { phone: null, contactId: null };
+    console.log("❌ Ошибка поиска контакта по телефону:", e.message);
+    return null;
   }
 }
 
@@ -254,11 +251,47 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
 // ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ (СТРОГО 4 ШАГА) =====
 async function handleDuplicates(env, currentLeadId) {
   console.log(`🔍 [Дубликаты] Старт проверки сделки: ${currentLeadId}`);
-  await sleep(2000);
+  
+  // Задержка 1 сек, как в вашем рабочем Node.js коде, чтобы данные успели сохраниться
+  await sleep(1000);
 
-  const { phone, contactId } = await getLeadContactInfo(env, currentLeadId);
-  if (!phone || !contactId) {
-    console.log("⏭️ [Дубликаты] Телефон или контакт не найден");
+  // 1. Получаем контакты новой сделки
+  const leadRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}?with=contacts`, {
+    headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+  });
+  if (!leadRes.ok) {
+    console.log("⏭️ [Дубликаты] Не удалось получить данные новой сделки");
+    return;
+  }
+  const leadData = await leadRes.json();
+  const contacts = leadData._embedded?.contacts || [];
+  if (contacts.length === 0) {
+    console.log("⏭️ [Дубликаты] У новой сделки нет контактов");
+    return;
+  }
+
+  // 2. Извлекаем телефон из первого контакта
+  let phone = null;
+  const firstContactId = contacts[0].id;
+  const contactRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${firstContactId}`, {
+    headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+  });
+  if (contactRes.ok) {
+    const contactData = await contactRes.json();
+    for (const field of contactData.custom_fields_values || []) {
+      if (field.values && field.values.length > 0) {
+        const val = String(field.values[0].value);
+        const normalized = val.replace(/\D/g, "");
+        if (normalized.length >= 11 && (normalized.startsWith("7") || normalized.startsWith("8"))) {
+          phone = "+7" + normalized.slice(1);
+          break;
+        }
+      }
+    }
+  }
+
+  if (!phone) {
+    console.log("⏭️ [Дубликаты] Телефон не найден в контакте");
     return;
   }
 
@@ -267,10 +300,19 @@ async function handleDuplicates(env, currentLeadId) {
     return;
   }
 
-  console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт ID: ${contactId}`);
+  console.log(`📞 [Дубликаты] Телефон: ${phone}`);
 
+  // 3. Ищем контакт по номеру телефона (ПРОВЕРЕННЫЙ ВАМИ МЕТОД)
+  const targetContactId = await findContactByPhone(env, phone);
+  if (!targetContactId) {
+    console.log("⏭️ [Дубликаты] Контакт по телефону не найден через поиск");
+    return;
+  }
+  console.log(`✅ [Дубликаты] Найден контакт ID: ${targetContactId}`);
+
+  // 4. Ищем старые сделки этого контакта в нужной воронке и статусе
   const queryParams = new URLSearchParams({
-    'filter[contact_id]': contactId,
+    'filter[contact_id]': targetContactId,
     'filter[pipeline_id]': TECHNIQUE_PIPELINE_ID,
     'filter[status_id]': OLD_STATUS_ID,
     'limit': '50'
@@ -331,12 +373,12 @@ async function handleDuplicates(env, currentLeadId) {
   // ==========================================================
   // ШАГ 2: Открепляем контакт ОТ новой сделки
   // ==========================================================
-  console.log(`🔄 ШАГ 2: Открепляем контакт ID: ${contactId} ОТ новой сделки ID: ${currentLeadId}...`);
+  console.log(`🔄 ШАГ 2: Открепляем контакт ID: ${targetContactId} ОТ новой сделки ID: ${currentLeadId}...`);
   try {
     const detachRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ to: [{ id: parseInt(contactId), type: "contacts" }] })
+      body: JSON.stringify({ to: [{ id: parseInt(targetContactId), type: "contacts" }] })
     });
     if (detachRes.ok) {
       console.log(`✅ Контакт успешно откреплен от новой сделки`);
