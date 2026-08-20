@@ -199,9 +199,9 @@ async function getLeadContactInfo(env, leadId) {
   }
 }
 
-// Перенос примечаний с ПОЛНЫМ логированием ответа amoCRM
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
+    console.log(`📥 Чтение примечаний ИЗ сделки ID: ${fromLeadId}`);
     const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
@@ -221,13 +221,15 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
     let count = 0;
     
     for (const note of notes) {
+      const clearText = note.text || "Без текста";
+      // Добавляем маркер, чтобы было видно, что это перенос
       const payload = [{
-        note_type: note.note_type || 1, // 1 = обычное примечание, если тип не определен
-        text: note.text || "Перенесенное примечание",
+        note_type: note.note_type || 1,
+        text: `🔄 [ПЕРЕНОС ИЗ СДЕЛКИ #${fromLeadId}]: ${clearText}`,
         params: note.params || {}
       }];
 
-      console.log(`📤 Отправка примечания в сделку ${toLeadId}:`, JSON.stringify(payload));
+      console.log(`📝 ДЕЙСТВИЕ: Создаем примечание В сделке ID: ${toLeadId}. Текст: "${payload[0].text}"`);
 
       const createRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
@@ -236,7 +238,7 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
       });
       
       const resText = await createRes.text();
-      console.log(`📥 Ответ amoCRM на создание примечания: ${createRes.status} - ${resText}`);
+      console.log(`📝 ОТВЕТ amoCRM на примечание: ${createRes.status} - ${resText}`);
       
       if (createRes.ok) count++;
     }
@@ -249,12 +251,14 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
 
 async function createMergeTask(env, leadId, responsibleUserId, taskText) {
   try {
+    console.log(`📌 ДЕЙСТВИЕ: Создаем задачу В сделке ID: ${leadId} для пользователя ID: ${responsibleUserId}`);
+    
     const payload = [{
       entity_type: "leads",
-      entity_id: leadId,
+      entity_id: parseInt(leadId),
       task_type: "call",
       text: taskText,
-      responsible_user_id: responsibleUserId,
+      responsible_user_id: parseInt(responsibleUserId),
       duration: 300,
       complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
     }];
@@ -265,8 +269,11 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
       body: JSON.stringify(payload)
     });
     
+    const resText = await res.text();
+    console.log(`📌 ОТВЕТ amoCRM на задачу: ${res.status} - ${resText}`);
+    
     if (!res.ok) {
-      console.log(`⚠️ Не удалось создать задачу: ${res.status} ${await res.text()}`);
+      console.log(`⚠️ Не удалось создать задачу`);
     }
   } catch (e) {
     console.log("❌ Ошибка создания задачи:", e.message);
@@ -274,8 +281,6 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
 }
 
 // ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ =====
-// ===== ЗАМЕНИТЕ ФУНКЦИЮ handleDuplicates ПОЛНОСТЬЮ =====
-
 async function handleDuplicates(env, currentLeadId) {
   console.log(`🔍 [Дубликаты] Проверка новой сделки: ${currentLeadId}`);
 
@@ -292,7 +297,7 @@ async function handleDuplicates(env, currentLeadId) {
     return;
   }
 
-  console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт: ${contactId}`);
+  console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт ID: ${contactId}`);
 
   const now = new Date();
   const fromDate = Math.floor(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).getTime() / 1000);
@@ -331,27 +336,36 @@ async function handleDuplicates(env, currentLeadId) {
     return;
   }
 
-  console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка: ${oldLead.id}`);
-  console.log(`🔄 [Дубликаты] ШАГ 1: Переносим примечания ИЗ новой (${currentLeadId}) В старую (${oldLead.id})...`);
+  console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка ID: ${oldLead.id}`);
+  console.log(`⚠️ ВАЖНО: Переносим данные ИЗ НОВОЙ сделки (${currentLeadId}) В СТАРУЮ сделку (${oldLead.id})`);
   
+  console.log(`🔄 [Дубликаты] ШАГ 1: Переносим примечания...`);
   const migratedCount = await migrateNotes(env, currentLeadId, oldLead.id);
   console.log(`✅ [Дубликаты] Перенесено примечаний: ${migratedCount}`);
 
-  console.log(`🔄 [Дубликаты] ШАГ 2: Открепляем контакт ОТ НОВОЙ сделки (${currentLeadId})...`);
+  console.log(`🔄 [Дубликаты] ШАГ 2: Открепление контакта...`);
+  console.log(`🔗 ДЕЙСТВИЕ: Открепляем контакт ID: ${contactId} ОТ сделки ID: ${currentLeadId}`);
   try {
-    await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
+    const detachRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ to: [{ id: contactId, type: "contacts" }] })
+      body: JSON.stringify({ to: [{ id: parseInt(contactId), type: "contacts" }] })
     });
-    console.log(`✅ [Дубликаты] Контакт откреплен от НОВОЙ сделки`);
+    const detachText = await detachRes.text();
+    console.log(`🔗 ОТВЕТ открепления: ${detachRes.status} - ${detachText}`);
+    
+    if (detachRes.ok) {
+      console.log(`✅ [Дубликаты] Контакт успешно откреплен от НОВОЙ сделки`);
+    } else {
+      console.log(`⚠️ [Дубликаты] Ошибка открепления контакта`);
+    }
   } catch (e) {
-    console.log("️ [Дубликаты] Ошибка открепления:", e.message);
+    console.log("⚠️ [Дубликаты] Ошибка открепления:", e.message);
   }
 
-  console.log(`🔄 [Дубликаты] ШАГ 3: УДАЛЯЕМ НОВУЮ сделку (${currentLeadId}) через PATCH...`);
+  console.log(`🔄 [Дубликаты] ШАГ 3: Удаление новой сделки...`);
+  console.log(`🗑️ ДЕЙСТВИЕ: Удаляем (is_deleted: true) сделку ID: ${currentLeadId}`);
   try {
-    // В amoCRM v4 удаление делается через PATCH с is_deleted: true
     const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
@@ -359,22 +373,25 @@ async function handleDuplicates(env, currentLeadId) {
     });
     
     const delText = await delRes.text();
-    console.log(` Ответ на удаление: ${delRes.status} - ${delText}`);
+    console.log(`🗑️ ОТВЕТ на удаление: ${delRes.status} - ${delText}`);
     
     if (delRes.ok || delRes.status === 204) {
-      console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно УДАЛЕНА`);
+      console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно помечена как УДАЛЕННАЯ`);
     } else {
       console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}`);
     }
   } catch (e) {
-    console.log(" [Дубликаты] Ошибка удаления:", e.message);
+    console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
   }
 
-  console.log(` [Дубликаты] ШАГ 4: Создаем задачи на СТАРОЙ сделке (${oldLead.id})...`);
+  console.log(`🔄 [Дубликаты] ШАГ 4: Создание задач...`);
   const taskText = `🔄 Объединение: примечания перенесены из удаленной новой сделки #${currentLeadId}`;
   
+  console.log(`📌 ДЕЙСТВИЕ: Создаем задачу В сделке ID: ${oldLead.id} (Ответственный)`);
   await createMergeTask(env, oldLead.id, oldLead.responsible_user_id, taskText);
+  
   for (const rgpId of RGP_USER_IDS) {
+    console.log(`📌 ДЕЙСТВИЕ: Создаем задачу В сделке ID: ${oldLead.id} (РГП: ${rgpId})`);
     await createMergeTask(env, oldLead.id, rgpId, `🔔 Контроль РГП: новая сделка #${currentLeadId} удалена, данные в старой #${oldLead.id}`);
   }
 
