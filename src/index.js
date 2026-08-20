@@ -40,15 +40,15 @@ const ANDROID_MODELS = [975979, 976893];
 const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
 
 // ===== ДУБЛИ (Сущи) =====
-const TEST_PHONE_NUMBER = "+79991409013"; // ️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
+const TEST_PHONE_NUMBER = "+79991409013"; // ⚠️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
 const TECHNIQUE_PIPELINE_ID = 5276629;
 const OLD_STATUS_ID = 143; // Закрыто и не реализовано
 const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811];
 const RGP_USER_IDS = [8517166, 8789956]; // Михаил Кострюков, Даниил Бровкин
 
-// ===== RATE LIMITING: не более 7 запросов в секунду =====
+// ===== RATE LIMITING: не более 6 запросов в секунду (с запасом до 7) =====
 let lastRequestTime = 0;
-const MIN_INTERVAL_MS = 160; // ~6 запросов в секунду (с запасом)
+const MIN_INTERVAL_MS = 180; 
 
 async function rateLimitedFetch(url, options = {}) {
   const now = Date.now();
@@ -242,7 +242,7 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
         params: note.params || {}
       }];
 
-      console.log(` ДЕЙСТВИЕ: Создаем примечание В сделке ID: ${toLeadId}`);
+      console.log(`📝 ДЕЙСТВИЕ: Создаем примечание В сделке ID: ${toLeadId}`);
 
       const createRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
@@ -250,7 +250,7 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
         body: JSON.stringify(payload)
       });
       
-      console.log(` ОТВЕТ amoCRM на примечание: ${createRes.status}`);
+      console.log(`📝 ОТВЕТ amoCRM на примечание: ${createRes.status}`);
       
       if (createRes.ok) count++;
     }
@@ -284,7 +284,7 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
     console.log(`📌 ОТВЕТ amoCRM на задачу: ${res.status}`);
     
     if (!res.ok) {
-      console.log(`️ Не удалось создать задачу`);
+      console.log(`⚠️ Не удалось создать задачу`);
     }
   } catch (e) {
     console.log("❌ Ошибка создания задачи:", e.message);
@@ -310,31 +310,23 @@ async function handleDuplicates(env, currentLeadId) {
 
   console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт ID: ${contactId}`);
 
-  const now = new Date();
-  const fromDate = Math.floor(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).getTime() / 1000);
-
-  const queryParams = new URLSearchParams({
-    'filter[contact_id]': contactId,
-    'filter[pipeline_id]': TECHNIQUE_PIPELINE_ID,
-    'filter[status_id]': OLD_STATUS_ID,
-    'limit': '50'
-  });
-
-  console.log(` [Дубликаты] Ищем сделки контакта в воронке ${TECHNIQUE_PIPELINE_ID} и статусе ${OLD_STATUS_ID}...`);
+  // 🔥 ИСПРАВЛЕНИЕ: Получаем сделки НАПРЯМУЮ через ресурс контакта.
+  // Это гарантирует, что контакт ДЕЙСТВИТЕЛЬНО привязан к этим сделкам.
+  console.log(`🔍 [Дубликаты] Ищем сделки, привязанные к контакту ${contactId}...`);
   
   const leadsRes = await rateLimitedFetch(
-    `https://${env.AMO_DOMAIN}/api/v4/leads?${queryParams.toString()}`,
+    `https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}/leads?limit=250`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
   );
   
   if (!leadsRes.ok) {
-    console.log(`❌ Ошибка запроса сделок: ${leadsRes.status}`);
+    console.log(`❌ Ошибка запроса сделок контакта: ${leadsRes.status}`);
     return;
   }
   
   const leadsText = await leadsRes.text();
   if (!leadsText || leadsText.trim() === "") {
-    console.log("⏭️ [Дубликаты] Подходящих сделок не найдено (пустой ответ)");
+    console.log("⏭️ [Дубликаты] У контакта нет привязанных сделок");
     return;
   }
   
@@ -342,12 +334,12 @@ async function handleDuplicates(env, currentLeadId) {
   try {
     leadsData = JSON.parse(leadsText);
   } catch (e) {
-    console.log("❌ Ошибка парсинга JSON сделок");
+    console.log("❌ Ошибка парсинга JSON сделок контакта");
     return;
   }
   
   const allLeads = leadsData._embedded?.leads || [];
-  console.log(`📋 [Дубликаты] Найдено подходящих сделок (воронка+статус): ${allLeads.length}`);
+  console.log(`📋 [Дубликаты] Найдено всего сделок у контакта: ${allLeads.length}`);
 
   let oldLead = null;
   
@@ -356,34 +348,28 @@ async function handleDuplicates(env, currentLeadId) {
       console.log(`⏭️ Пропускаем текущую новую сделку ${lead.id}`);
       continue;
     }
+    if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) {
+      console.log(`⏭️ Сделка ${lead.id}: не та воронка (${lead.pipeline_id})`);
+      continue;
+    }
+    if (lead.status_id !== OLD_STATUS_ID) {
+      console.log(`⏭️ Сделка ${lead.id}: не тот статус (${lead.status_id})`);
+      continue;
+    }
 
     const reqTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
     const reqType = reqTypeField?.values?.[0]?.enum_id;
     
     if (!reqType || !TARGET_REQUEST_TYPES.includes(reqType)) {
-      console.log(`️ Сделка ${lead.id}: не тот тип запроса (${reqType})`);
+      console.log(`⏭️ Сделка ${lead.id}: не тот тип запроса (${reqType})`);
       continue;
     }
 
-    console.log(` Проверяем сделку ${lead.id} на наличие контакта ${contactId}...`);
-    try {
-      const checkRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${lead.id}?with=contacts`, {
-        headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-      });
-      const checkData = await checkRes.json();
-      const contacts = checkData._embedded?.contacts || [];
-      const hasContact = contacts.some(c => c.id === parseInt(contactId));
-      
-      if (hasContact) {
-        console.log(`✅ [Дубликаты] Сделка ${lead.id} подходит и имеет контакт ${contactId}`);
-        oldLead = lead;
-        break;
-      } else {
-        console.log(`⏭️ Сделка ${lead.id} не имеет контакта ${contactId}, пропускаем`);
-      }
-    } catch (e) {
-      console.log(`⚠️ Ошибка проверки сделки ${lead.id}:`, e.message);
-    }
+    // Если мы дошли сюда, сделка идеально подходит и гарантированно имеет этот контакт,
+    // так как получена через надежный эндпоинт /contacts/{id}/leads
+    console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка ID: ${lead.id}, которая подходит по всем критериям!`);
+    oldLead = lead;
+    break;
   }
 
   if (!oldLead) {
@@ -391,7 +377,7 @@ async function handleDuplicates(env, currentLeadId) {
     return;
   }
 
-  console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка ID: ${oldLead.id}`);
+  console.log(`✅ [Дубликаты] Финальная цель: СТАРАЯ сделка ID: ${oldLead.id}`);
   console.log(`⚠️ ВАЖНО: Переносим данные ИЗ НОВОЙ сделки (${currentLeadId}) В СТАРУЮ сделку (${oldLead.id})`);
   
   console.log(`🔄 [Дубликаты] ШАГ 1: Переносим примечания...`);
@@ -419,7 +405,7 @@ async function handleDuplicates(env, currentLeadId) {
   }
 
   console.log(`🔄 [Дубликаты] ШАГ 3: Удаление новой сделки...`);
-  console.log(`️ ДЕЙСТВИЕ: Удаляем (is_deleted: true) сделку ID: ${currentLeadId}`);
+  console.log(`🗑️ ДЕЙСТВИЕ: Удаляем (is_deleted: true) сделку ID: ${currentLeadId}`);
   try {
     const delRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
       method: "PATCH",
@@ -433,7 +419,7 @@ async function handleDuplicates(env, currentLeadId) {
     if (delRes.ok || delRes.status === 204) {
       console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно помечена как УДАЛЕННАЯ`);
     } else {
-      console.log(` [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}. Ответ: ${delText}`);
+      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}. Ответ: ${delText}`);
     }
   } catch (e) {
     console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
