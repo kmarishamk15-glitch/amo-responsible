@@ -153,39 +153,69 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 
 // ===== ДУБЛИ: Вспомогательные функции =====
 
+function normalizePhone(phone) {
+  if (!phone) return null;
+  let p = String(phone).replace(/\D/g, "");
+  if (p.startsWith("8")) p = "7" + p.slice(1);
+  if (p.length < 11) return null;
+  return p;
+}
+
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function getLeadContactInfo(env, leadId) {
   try {
-    const linksRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/links`, {
+    console.log(`🔗 [Дубликаты] Запрос деталей лида ${leadId} с контактами...`);
+    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    if (!linksRes.ok) return { phone: null, contactId: null };
     
-    const linksData = await linksRes.json();
-    const contacts = linksData._embedded?.contacts || [];
-    if (contacts.length === 0) return { phone: null, contactId: null };
+    if (!leadRes.ok) {
+      console.log(`❌ [Дубликаты] Ошибка запроса лида: ${leadRes.status}`);
+      return { phone: null, contactId: null };
+    }
+    
+    const leadData = await leadRes.json();
+    const contacts = leadData._embedded?.contacts || [];
+    
+    if (contacts.length === 0) {
+      console.log(`⚠️ [Дубликаты] К лиду ${leadId} НЕ привязан ни один контакт.`);
+      return { phone: null, contactId: null };
+    }
 
     const contactId = contacts[0].id;
+    console.log(`👤 [Дубликаты] Найден контакт ID: ${contactId}. Запрашиваем детали...`);
+
     const contactRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    if (!contactRes.ok) return { phone: null, contactId };
+    
+    if (!contactRes.ok) {
+      console.log(`❌ [Дубликаты] Ошибка запроса контакта: ${contactRes.status}`);
+      return { phone: null, contactId };
+    }
     
     const contactData = await contactRes.json();
-    let phone = null;
+    console.log(`📞 [Дубликаты] Поля контакта:`, JSON.stringify(contactData.custom_fields_values));
 
     for (const field of contactData.custom_fields_values || []) {
       if (field.values && field.values.length > 0) {
         const val = String(field.values[0].value);
-        const digits = val.replace(/\D/g, '');
-        if (digits.length >= 10 && (digits.startsWith('7') || digits.startsWith('8'))) {
-          phone = digits.startsWith('8') ? '+7' + digits.slice(1) : '+7' + digits.slice(1);
-          break;
+        const normalized = normalizePhone(val);
+        if (normalized) {
+          const phone = '+7' + normalized.slice(1);
+          console.log(`✅ [Дубликаты] Телефон найден: ${phone}`);
+          return { phone, contactId };
         }
       }
     }
-    return { phone, contactId };
+    
+    console.log(`⚠️ [Дубликаты] Валидный номер телефона не найден в полях контакта.`);
+    return { phone: null, contactId };
   } catch (e) {
-    console.log("❌ Ошибка получения данных контакта:", e.message);
+    console.log("❌ [Дубликаты] Критическая ошибка getLeadContactInfo:", e.message);
     return { phone: null, contactId: null };
   }
 }
@@ -224,7 +254,7 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
     task_type: "call",
     text: taskText,
     responsible_user_id: responsibleUserId,
-    duration: 300, // 5 минут
+    duration: 300,
     complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
   };
 
@@ -242,19 +272,23 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
 }
 
 async function handleDuplicates(env, currentLeadId) {
-  console.log(`🔍 [Дубликаты] Проверка лида: ${currentLeadId}`);
+  console.log(` [Дубликаты] Проверка лида: ${currentLeadId}`);
+
+  //  ВАЖНО: Ждем 2 секунды, чтобы контакт успел привязаться к сделке
+  console.log(`⏳ [Дубликаты] Ожидание 2 секунды для привязки контакта...`);
+  await sleep(2000);
 
   const { phone, contactId } = await getLeadContactInfo(env, currentLeadId);
   if (!phone || !contactId) {
-    console.log("⏭️ [Дубликаты] Телефон или контакт не найден, пропускаю");
+    console.log("️ [Дубликаты] Телефон или контакт не найден, пропускаю");
     return;
   }
 
-  console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт ID: ${contactId}`);
+  console.log(`📞 [Дубликаты] Итоговый телефон: ${phone}, Контакт ID: ${contactId}`);
 
-  // ⚠️ ВРЕМЕННАЯ ПРОВЕРКА ДЛЯ ТЕСТА (УДАЛИТЬ ПОСЛЕ ТЕСТИРОВАНИЯ)
+  // ️ ВРЕМЕННАЯ ПРОВЕРКА ДЛЯ ТЕСТА (УДАЛИТЬ ПОСЛЕ ТЕСТИРОВАНИЯ)
   if (phone !== TEST_PHONE_NUMBER) {
-    console.log(`⏭️ [Дубликаты] Телефон ${phone} не является тестовым (${TEST_PHONE_NUMBER}), пропускаю`);
+    console.log(`️ [Дубликаты] Телефон ${phone} не является тестовым (${TEST_PHONE_NUMBER}), пропускаю`);
     return;
   }
 
@@ -262,14 +296,21 @@ async function handleDuplicates(env, currentLeadId) {
   const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
   const fromDate = Math.floor(oneMonthAgo.getTime() / 1000);
 
+  // Получаем все сделки контакта через filter[contact_id]
   const leadsRes = await fetch(
     `https://${env.AMO_DOMAIN}/api/v4/leads?filter[contact_id]=${contactId}&filter[created_at][from]=${fromDate}&limit=250`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
   );
+  
+  if (!leadsRes.ok) {
+    console.log(`❌ [Дубликаты] Ошибка запроса сделок: ${leadsRes.status}`);
+    return;
+  }
+  
   const leadsData = await leadsRes.json();
   const allLeads = leadsData._embedded?.leads || [];
 
-  console.log(`📋 [Дубликаты] Найдено всего сделок у контакта за месяц: ${allLeads.length}`);
+  console.log(`📋 [Дубликаты] Найдено сделок у контакта за месяц: ${allLeads.length}`);
 
   // Ищем СТАРУЮ сделку (Техника, 143, нужный тип запроса), которая НЕ является текущей
   const oldLead = allLeads.find(lead => {
@@ -291,7 +332,7 @@ async function handleDuplicates(env, currentLeadId) {
 
   // 1. Переносим примечания ИЗ старой В новую
   const migratedCount = await migrateNotes(env, oldLead.id, currentLeadId);
-  console.log(`📝 [Дубликаты] Перенесено примечаний: ${migratedCount}`);
+  console.log(` [Дубликаты] Перенесено примечаний: ${migratedCount}`);
 
   // 2. Открепляем контакт от СТАРОЙ сделки
   try {
@@ -331,14 +372,15 @@ async function handleDuplicates(env, currentLeadId) {
       })
     });
     if (patchRes.ok) {
-      console.log(`🚀 [Дубликаты] Новая сделка ${currentLeadId} перемещена в Технику, этап 47054479`);
+      console.log(` [Дубликаты] Новая сделка ${currentLeadId} перемещена в Технику, этап 47054479`);
+    } else {
+      console.log("❌ [Дубликаты] Ошибка перемещения новой сделки");
     }
   } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка перемещения новой сделки:", e.message);
+    console.log("❌ [Дубликаты] Ошибка перемещения:", e.message);
   }
 
   // 5. Создаем задачи на НОВОЙ сделке
-  // Получаем актуальные данные новой сделки, чтобы узнать ответственного после перемещения
   const newLeadDataRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
@@ -348,7 +390,7 @@ async function handleDuplicates(env, currentLeadId) {
   const taskText = `🔄 Объединение дубля: примечания перенесены из удаленной старой сделки #${oldLead.id}`;
   
   await createMergeTask(env, currentLeadId, responsibleId, taskText);
-  console.log(`📌 [Дубликаты] Задача создана для ответственного новой сделки: ${responsibleId}`);
+  console.log(`📌 [Дубликаты] Задача создана для ответственного: ${responsibleId}`);
 
   for (const rgpId of RGP_USER_IDS) {
     await createMergeTask(env, currentLeadId, rgpId, `🔔 Контроль РГП: перенос сделки из Услуги в Технику. Старая сделка #${oldLead.id} удалена.`);
@@ -557,7 +599,6 @@ export default {
         console.log("⏭️ No updates needed");
       }
 
-      // ЗАПУСК ПРОВЕРКИ НА ДУБЛИ (асинхронно)
       ctx.waitUntil(handleDuplicates(env, leadId));
       return new Response("OK");
 
