@@ -199,7 +199,7 @@ async function getLeadContactInfo(env, leadId) {
   }
 }
 
-// 100% БЕЗОПАСНЫЙ перенос примечаний (с массивом для amoCRM v4)
+// Перенос примечаний с ПОЛНЫМ логированием ответа amoCRM
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
     const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
@@ -221,29 +221,34 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
     let count = 0;
     
     for (const note of notes) {
-      // amoCRM v4 требует МАССИВ объектов при создании
       const payload = [{
-        note_type: note.note_type,
-        text: note.text || "",
+        note_type: note.note_type || 1, // 1 = обычное примечание, если тип не определен
+        text: note.text || "Перенесенное примечание",
         params: note.params || {}
       }];
+
+      console.log(`📤 Отправка примечания в сделку ${toLeadId}:`, JSON.stringify(payload));
 
       const createRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
+      
+      const resText = await createRes.text();
+      console.log(`📥 Ответ amoCRM на создание примечания: ${createRes.status} - ${resText}`);
+      
       if (createRes.ok) count++;
     }
     return count;
   } catch (e) {
+    console.log("❌ Ошибка переноса примечаний:", e.message);
     return 0;
   }
 }
 
 async function createMergeTask(env, leadId, responsibleUserId, taskText) {
   try {
-    // amoCRM v4 требует МАССИВ объектов при создании задач
     const payload = [{
       entity_type: "leads",
       entity_id: leadId,
@@ -254,17 +259,21 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
       complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
     }];
 
-    await fetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
+    const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    
+    if (!res.ok) {
+      console.log(`⚠️ Не удалось создать задачу: ${res.status} ${await res.text()}`);
+    }
   } catch (e) {
     console.log("❌ Ошибка создания задачи:", e.message);
   }
 }
 
-// ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ (СТРОГО ПО ТЗ) =====
+// ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ =====
 async function handleDuplicates(env, currentLeadId) {
   console.log(`🔍 [Дубликаты] Проверка новой сделки: ${currentLeadId}`);
 
@@ -305,7 +314,6 @@ async function handleDuplicates(env, currentLeadId) {
   
   const allLeads = leadsData._embedded?.leads || [];
 
-  // Ищем СТАРУЮ сделку (Техника, 143, нужный тип), которая НЕ является текущей
   const oldLead = allLeads.find(lead => {
     if (lead.id === currentLeadId) return false;
     if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) return false;
@@ -341,16 +349,17 @@ async function handleDuplicates(env, currentLeadId) {
 
   console.log(`🔄 [Дубликаты] ШАГ 3: УДАЛЯЕМ НОВУЮ сделку (${currentLeadId})...`);
   try {
-    // В amoCRM v4 удаление делается через DELETE /leads с массивом ID в теле!
-    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads`, {
+    // Пробуем удалить конкретный лид по ID (надежнее, чем массовое удаление)
+    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify([{ id: currentLeadId }])
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}` }
     });
+    
     if (delRes.ok) {
       console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно УДАЛЕНА`);
     } else {
-      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}`);
+      const errText = await delRes.text();
+      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}. Ответ: ${errText}`);
     }
   } catch (e) {
     console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
