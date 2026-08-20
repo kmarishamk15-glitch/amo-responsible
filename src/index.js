@@ -28,7 +28,6 @@ const CORRECTION_FIELD_NAMES = {
 // ===== БЮДЖЕТ =====
 const DISCOUNT_NONE = 972987;
 const AIRPODS_MAX = 975969;
-
 const BUDGET_IPHONE_BY_PACKAGE = { 982597: 1000, 982599: 2000, 982601: 2500 };
 const BUDGET_AKSY = { 972987: 1000, 981917: 700, 981919: 450, 972989: 450, 976369: 950, 976371: 950, 976373: 850, 976375: 450 };
 const BUDGET_HARDWARE = { 972987: 2300, 981917: 1610, 981919: 1035, 972989: 1035, 976369: 2185, 976371: 2185, 976373: 1955, 976375: 1035 };
@@ -42,11 +41,11 @@ const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
 // ===== ДУБЛИ (Сущи) =====
 const TEST_PHONE_NUMBER = "+79991409013"; // ⚠️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
 const TECHNIQUE_PIPELINE_ID = 5276629;
-const OLD_STATUS_ID = 143; // Закрыто и не реализовано
+const OLD_STATUS_ID = 143; 
 const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811];
-const RGP_USER_IDS = [8517166, 8789956]; // Михаил Кострюков, Даниил Бровкин
+const RGP_USER_IDS = [8517166, 8789956];
 
-// ===== RATE LIMITING: не более 6 запросов в секунду (с запасом до 7) =====
+// ===== RATE LIMITING (макс 6 запросов в сек, запас до 7) =====
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 180; 
 
@@ -93,7 +92,6 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
   let budget = null;
   let forceNoDiscount = false;
   const multiplier = promo ? 2 : 1;
-
   if (category === 974775) {
     forceNoDiscount = true;
     const base = BUDGET_IPHONE_BY_PACKAGE[soldPackage];
@@ -105,7 +103,6 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
     if (category === 974777) table = (model === AIRPODS_MAX) ? BUDGET_HARDWARE : BUDGET_AKSY;
     else if (category === 974779) table = BUDGET_HARDWARE;
     else if (category === 974781 || category === 982623) table = BUDGET_BU;
-
     if (table && discount != null) {
       const base = table[discount];
       budget = base != null ? base * multiplier : null;
@@ -117,19 +114,14 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
 function getCorrectionUpdate(fields, responsibleId) {
   let currentCorrectionId = null;
   let currentCorrectionName = null;
-
   for (const field of fields) {
     if (field.field_id === 582983 && field.values?.length) {
       currentCorrectionId = field.values[0].enum_id || field.values[0].value;
       currentCorrectionName = CORRECTION_FIELD_NAMES[currentCorrectionId] || field.values[0].value;
     }
   }
-
   const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
-  console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
-
   if (responsibleName && currentCorrectionName && currentCorrectionName === responsibleName && currentCorrectionId !== 983499) {
-    console.log("✅ Names match → setting 'Не требуется' (983499)");
     return { field_id: 582983, values: [{ enum_id: 983499 }] };
   }
   return null;
@@ -139,7 +131,6 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const custom_fields_values = [];
   let newPrice = null;
   let type = null, model = null, currentDiscount = null, currentSoldPackage = null, currentCategory = null;
-
   for (const field of fields) {
     if (!field.values?.length) continue;
     if (field.field_id === 466253) type = field.values[0].enum_id;
@@ -148,17 +139,12 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
     if (field.field_id === 574827) currentDiscount = field.values[0].enum_id;
     if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
   }
-
   const effectiveCategory = deriveCategory(type, model, currentCategory);
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
-
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
-
   if (budget != null && lead.price !== budget) {
-    console.log(`${logPrefix} 💰 Setting budget: ${lead.price} → ${budget}${promo ? " (x2 promo)" : ""}`);
     newPrice = budget;
   }
   return { custom_fields_values, newPrice };
@@ -196,7 +182,6 @@ async function getLeadContactInfo(env, leadId) {
     if (!contactRes.ok) return { phone: null, contactId };
     
     const contactData = await contactRes.json();
-
     for (const field of contactData.custom_fields_values || []) {
       if (field.values && field.values.length > 0) {
         const val = String(field.values[0].value);
@@ -208,63 +193,45 @@ async function getLeadContactInfo(env, leadId) {
     }
     return { phone: null, contactId };
   } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка getLeadContactInfo:", e.message);
+    console.log("❌ Ошибка getLeadContactInfo:", e.message);
     return { phone: null, contactId: null };
   }
 }
 
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
-    console.log(`📥 Чтение примечаний ИЗ сделки ID: ${fromLeadId}`);
     const res = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
     if (!res.ok) return 0;
-
     const text = await res.text();
     if (!text || text.trim() === "") return 0;
-
     let data;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      return 0;
-    }
+    try { data = JSON.parse(text); } catch (e) { return 0; }
 
     const notes = data._embedded?.notes || [];
     let count = 0;
-    
     for (const note of notes) {
-      const clearText = note.text || "Без текста";
       const payload = [{
         note_type: note.note_type || 1,
-        text: `🔄 [ПЕРЕНОС ИЗ СДЕЛКИ #${fromLeadId}]: ${clearText}`,
+        text: `🔄 [ПЕРЕНОС ИЗ СДЕЛКИ #${fromLeadId}]: ${note.text || "Без текста"}`,
         params: note.params || {}
       }];
-
-      console.log(`📝 ДЕЙСТВИЕ: Создаем примечание В сделке ID: ${toLeadId}`);
-
       const createRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      
-      console.log(`📝 ОТВЕТ amoCRM на примечание: ${createRes.status}`);
-      
       if (createRes.ok) count++;
     }
     return count;
   } catch (e) {
-    console.log("❌ Ошибка переноса примечаний:", e.message);
     return 0;
   }
 }
 
 async function createMergeTask(env, leadId, responsibleUserId, taskText) {
   try {
-    console.log(`📌 ДЕЙСТВИЕ: Создаем задачу В сделке ID: ${leadId} для пользователя ID: ${responsibleUserId}`);
-    
     const payload = [{
       entity_type: "leads",
       entity_id: parseInt(leadId),
@@ -274,196 +241,161 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
       duration: 300,
       complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
     }];
-
-    const res = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
+    await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    
-    console.log(`📌 ОТВЕТ amoCRM на задачу: ${res.status}`);
-    
-    if (!res.ok) {
-      console.log(`⚠️ Не удалось создать задачу`);
-    }
   } catch (e) {
     console.log("❌ Ошибка создания задачи:", e.message);
   }
 }
 
-// ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ =====
+// ===== ГЛАВНАЯ ЛОГИКА ДУБЛЕЙ (СТРОГО 4 ШАГА) =====
 async function handleDuplicates(env, currentLeadId) {
-  console.log(`🔍 [Дубликаты] Проверка новой сделки: ${currentLeadId}`);
-
+  console.log(`🔍 [Дубликаты] Старт проверки сделки: ${currentLeadId}`);
   await sleep(2000);
 
   const { phone, contactId } = await getLeadContactInfo(env, currentLeadId);
   if (!phone || !contactId) {
-    console.log("⏭️ [Дубликаты] Телефон или контакт не найден, пропускаю");
+    console.log("⏭️ [Дубликаты] Телефон или контакт не найден");
     return;
   }
 
   if (phone !== TEST_PHONE_NUMBER) {
-    console.log(`⏭️ [Дубликаты] Телефон ${phone} не тестовый, пропускаю`);
+    console.log(`⏭️ [Дубликаты] Телефон ${phone} не тестовый`);
     return;
   }
 
   console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт ID: ${contactId}`);
 
-  // 🔥 ИСПРАВЛЕНИЕ: Получаем сделки НАПРЯМУЮ через ресурс контакта.
-  // Это гарантирует, что контакт ДЕЙСТВИТЕЛЬНО привязан к этим сделкам.
-  console.log(`🔍 [Дубликаты] Ищем сделки, привязанные к контакту ${contactId}...`);
-  
+  const queryParams = new URLSearchParams({
+    'filter[contact_id]': contactId,
+    'filter[pipeline_id]': TECHNIQUE_PIPELINE_ID,
+    'filter[status_id]': OLD_STATUS_ID,
+    'limit': '50'
+  });
+
   const leadsRes = await rateLimitedFetch(
-    `https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}/leads?limit=250`,
+    `https://${env.AMO_DOMAIN}/api/v4/leads?${queryParams.toString()}`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
   );
   
   if (!leadsRes.ok) {
-    console.log(`❌ Ошибка запроса сделок контакта: ${leadsRes.status}`);
+    console.log(`❌ Ошибка запроса сделок: ${leadsRes.status}`);
     return;
   }
   
   const leadsText = await leadsRes.text();
   if (!leadsText || leadsText.trim() === "") {
-    console.log("⏭️ [Дубликаты] У контакта нет привязанных сделок");
+    console.log("⏭️ [Дубликаты] Подходящих сделок не найдено");
     return;
   }
   
   let leadsData;
-  try {
-    leadsData = JSON.parse(leadsText);
-  } catch (e) {
-    console.log("❌ Ошибка парсинга JSON сделок контакта");
-    return;
-  }
+  try { leadsData = JSON.parse(leadsText); } catch (e) { return; }
   
   const allLeads = leadsData._embedded?.leads || [];
-  console.log(`📋 [Дубликаты] Найдено всего сделок у контакта: ${allLeads.length}`);
+  console.log(`📋 [Дубликаты] Найдено сделок по фильтру: ${allLeads.length}`);
 
   let oldLead = null;
-  
   for (const lead of allLeads) {
-    if (lead.id === currentLeadId) {
-      console.log(`⏭️ Пропускаем текущую новую сделку ${lead.id}`);
-      continue;
-    }
-    if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) {
-      console.log(`⏭️ Сделка ${lead.id}: не та воронка (${lead.pipeline_id})`);
-      continue;
-    }
-    if (lead.status_id !== OLD_STATUS_ID) {
-      console.log(`⏭️ Сделка ${lead.id}: не тот статус (${lead.status_id})`);
-      continue;
-    }
+    if (lead.id === currentLeadId) continue;
 
     const reqTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
     const reqType = reqTypeField?.values?.[0]?.enum_id;
     
-    if (!reqType || !TARGET_REQUEST_TYPES.includes(reqType)) {
+    if (reqType && TARGET_REQUEST_TYPES.includes(reqType)) {
+      console.log(`✅ [Дубликаты] Найдена подходящая СТАРАЯ сделка ID: ${lead.id} (Тип запроса: ${reqType})`);
+      oldLead = lead;
+      break;
+    } else {
       console.log(`⏭️ Сделка ${lead.id}: не тот тип запроса (${reqType})`);
-      continue;
     }
-
-    // Если мы дошли сюда, сделка идеально подходит и гарантированно имеет этот контакт,
-    // так как получена через надежный эндпоинт /contacts/{id}/leads
-    console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка ID: ${lead.id}, которая подходит по всем критериям!`);
-    oldLead = lead;
-    break;
   }
 
   if (!oldLead) {
-    console.log("⏭️ [Дубликаты] Не найдена старая сделка с контактом в Технике (143) с нужным типом запроса.");
+    console.log("⏭️ [Дубликаты] Старая сделка с нужным типом запроса не найдена.");
     return;
   }
 
-  console.log(`✅ [Дубликаты] Финальная цель: СТАРАЯ сделка ID: ${oldLead.id}`);
-  console.log(`⚠️ ВАЖНО: Переносим данные ИЗ НОВОЙ сделки (${currentLeadId}) В СТАРУЮ сделку (${oldLead.id})`);
+  console.log(`⚠️ ПЕРЕНОС: ИЗ новой (${currentLeadId}) В старую (${oldLead.id})`);
   
-  console.log(`🔄 [Дубликаты] ШАГ 1: Переносим примечания...`);
+  // ==========================================================
+  // ШАГ 1: Переносим примечания ИЗ новой сделки В старую
+  // ==========================================================
+  console.log(`🔄 ШАГ 1: Перенос примечаний...`);
   const migratedCount = await migrateNotes(env, currentLeadId, oldLead.id);
-  console.log(`✅ [Дубликаты] Перенесено примечаний: ${migratedCount}`);
+  console.log(`✅ Перенесено примечаний: ${migratedCount}`);
 
-  console.log(`🔄 [Дубликаты] ШАГ 2: Открепление контакта...`);
-  console.log(`🔗 ДЕЙСТВИЕ: Открепляем контакт ID: ${contactId} ОТ сделки ID: ${currentLeadId}`);
+  // ==========================================================
+  // ШАГ 2: Открепляем контакт ОТ новой сделки
+  // ==========================================================
+  console.log(`🔄 ШАГ 2: Открепляем контакт ID: ${contactId} ОТ новой сделки ID: ${currentLeadId}...`);
   try {
     const detachRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ to: [{ id: parseInt(contactId), type: "contacts" }] })
     });
-    const detachText = await detachRes.text();
-    console.log(`🔗 ОТВЕТ открепления: ${detachRes.status}`);
-    
     if (detachRes.ok) {
-      console.log(`✅ [Дубликаты] Контакт успешно откреплен от НОВОЙ сделки`);
+      console.log(`✅ Контакт успешно откреплен от новой сделки`);
     } else {
-      console.log(`⚠️ [Дубликаты] Ошибка открепления контакта. Ответ: ${detachText}`);
+      console.log(`⚠️ Не удалось открепить контакт: ${detachRes.status}`);
     }
   } catch (e) {
-    console.log("⚠️ [Дубликаты] Ошибка открепления:", e.message);
+    console.log("⚠️ Ошибка открепления контакта:", e.message);
   }
 
-  console.log(`🔄 [Дубликаты] ШАГ 3: Удаление новой сделки...`);
-  console.log(`🗑️ ДЕЙСТВИЕ: Удаляем (is_deleted: true) сделку ID: ${currentLeadId}`);
+  // ==========================================================
+  // ШАГ 3: Удаляем новую сделку (через PATCH с флагом is_deleted: true)
+  // ==========================================================
+  console.log(`🔄 ШАГ 3: Удаление новой сделки (${currentLeadId})...`);
   try {
     const delRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ is_deleted: true })
     });
-    
-    const delText = await delRes.text();
-    console.log(`🗑️ ОТВЕТ на удаление: ${delRes.status}`);
-    
     if (delRes.ok || delRes.status === 204) {
-      console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно помечена как УДАЛЕННАЯ`);
+      console.log(`✅ НОВАЯ сделка ${currentLeadId} успешно удалена`);
     } else {
-      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}. Ответ: ${delText}`);
+      console.log(`❌ Не удалось удалить новую сделку: ${delRes.status}`);
     }
   } catch (e) {
-    console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
+    console.log("❌ Ошибка удаления:", e.message);
   }
 
-  console.log(`🔄 [Дубликаты] ШАГ 4: Создание задач...`);
-  const taskText = `🔄 Объединение: примечания перенесены из удаленной новой сделки #${currentLeadId}`;
+  // ==========================================================
+  // ШАГ 4: Создаем задачи на 5 минут в старой сделке
+  // ==========================================================
+  console.log(`🔄 ШАГ 4: Создание задач в старой сделке (${oldLead.id})...`);
+  const taskText = `🔄 Дубль: примечания перенесены из удаленной сделки #${currentLeadId}`;
   
-  console.log(`📌 ДЕЙСТВИЕ: Создаем задачу В сделке ID: ${oldLead.id} (Ответственный)`);
+  console.log(`📌 Создание задачи для ответственного старой сделки: ${oldLead.responsible_user_id}`);
   await createMergeTask(env, oldLead.id, oldLead.responsible_user_id, taskText);
   
   for (const rgpId of RGP_USER_IDS) {
-    console.log(`📌 ДЕЙСТВИЕ: Создаем задачу В сделке ID: ${oldLead.id} (РГП: ${rgpId})`);
-    await createMergeTask(env, oldLead.id, rgpId, `🔔 Контроль РГП: новая сделка #${currentLeadId} удалена, данные в старой #${oldLead.id}`);
+    console.log(`📌 Создание задачи для РГП: ${rgpId}`);
+    await createMergeTask(env, oldLead.id, rgpId, `🔔 РГП: дубль #${currentLeadId} удален, данные в #${oldLead.id}`);
   }
 
-  console.log("✅ [Дубликаты] Процесс объединения успешно завершен");
+  console.log("✅ [Дубликаты] Все 4 шага успешно выполнены");
 }
 
 export default {
   async fetch(request, env, ctx) {
-    console.log("======================");
-    console.log("🔥 WORKER START |", request.method);
-    console.log("======================");
-
     if (request.method === "GET") return new Response("Webhook works");
     if (request.method !== "POST") return new Response("OK");
 
     try {
-      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) {
-        console.log("❌ ENV NOT SET");
-        return new Response("ENV ERROR");
-      }
+      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) return new Response("ENV ERROR");
 
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
-      // =========================
-      // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
-      // =========================
       if (params.has("leads[update][0][id]")) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        console.log("📦 UPDATE EVENT:", leadId);
-        
         const leadRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
         });
@@ -503,8 +435,7 @@ export default {
 
         let newPrice = null;
         if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
-          const promo = isPromo(lead.name);
-          const budgetUpdates = getBudgetUpdates(lead, fields, promo, "[UPDATE]");
+          const budgetUpdates = getBudgetUpdates(lead, fields, isPromo(lead.name), "[UPDATE]");
           custom_fields_values.push(...budgetUpdates.custom_fields_values);
           newPrice = budgetUpdates.newPrice;
         }
@@ -512,7 +443,6 @@ export default {
         if (custom_fields_values.length > 0 || newPrice != null) {
           const patchBody = { custom_fields_values };
           if (newPrice != null) patchBody.price = newPrice;
-
           await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
             method: "PATCH",
             headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
@@ -524,9 +454,6 @@ export default {
         return new Response("OK");
       }
 
-      // =========================
-      // 2. СМЕНА СТАТУСА (leads[status])
-      // =========================
       if (params.has("leads[status][0][id]")) {
         const leadId = Number(params.get("leads[status][0][id]"));
         const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
@@ -566,9 +493,7 @@ export default {
             else if (effectiveCategory === 974781) targetRequestType = 938373;
             else if (effectiveCategory === 974783) targetRequestType = 957159;
           }
-          if (targetRequestType) {
-            customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
-          }
+          if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
 
           const budgetUpdates = getBudgetUpdates(leadData, fields, isPromo(leadData.name), "[STATUS 142]");
           customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
@@ -579,7 +504,6 @@ export default {
           rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
           rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
         );
-
         if (matchedRule && userId && actualResponsibleId !== userId) {
           patchPayload.responsible_user_id = userId;
         }
@@ -594,7 +518,6 @@ export default {
 
         if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
           if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-
           await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
             method: "PATCH",
             headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
@@ -606,7 +529,6 @@ export default {
       }
 
       return new Response("OK");
-
     } catch (e) {
       console.log("💥 CRASH:", e.stack || e.message);
       return new Response("ERROR", { status: 500 });
