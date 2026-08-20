@@ -30,21 +30,9 @@ const DISCOUNT_NONE = 972987;
 const AIRPODS_MAX = 975969;
 
 const BUDGET_IPHONE_BY_PACKAGE = { 982597: 1000, 982599: 2000, 982601: 2500 };
-
-const BUDGET_AKSY = {
-  972987: 1000, 981917: 700, 981919: 450, 972989: 450,
-  976369: 950, 976371: 950, 976373: 850, 976375: 450
-};
-
-const BUDGET_HARDWARE = {
-  972987: 2300, 981917: 1610, 981919: 1035, 972989: 1035,
-  976369: 2185, 976371: 2185, 976373: 1955, 976375: 1035
-};
-
-const BUDGET_BU = {
-  972987: 2500, 981917: 1750, 981919: 1125, 972989: 1125,
-  976369: 2375, 976371: 2375, 976373: 2125, 976375: 1125
-};
+const BUDGET_AKSY = { 972987: 1000, 981917: 700, 981919: 450, 972989: 450, 976369: 950, 976371: 950, 976373: 850, 976375: 450 };
+const BUDGET_HARDWARE = { 972987: 2300, 981917: 1610, 981919: 1035, 972989: 1035, 976369: 2185, 976371: 2185, 976373: 1955, 976375: 1035 };
+const BUDGET_BU = { 972987: 2500, 981917: 1750, 981919: 1125, 972989: 1125, 976369: 2375, 976371: 2375, 976373: 2125, 976375: 1125 };
 
 const ACCESSORIES = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
 const HARDWARE_MODELS = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
@@ -53,9 +41,10 @@ const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
 
 // ===== ДУБЛИ (Сущи) =====
 const TEST_PHONE_NUMBER = "+79991409013"; // ⚠️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
-const TARGET_PIPELINE_ID = 5276629;
-const TARGET_STATUS_IDS = [143]; // Только "Закрыто и не реализовано"
-const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811]; // Типы запроса для проверки на сущ
+const TECHNIQUE_PIPELINE_ID = 5276629;
+const OLD_STATUS_ID = 143; // Закрыто и не реализовано
+const NEW_STATUS_ID = 47054479; // Клиент заинтересован в покупке
+const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811];
 const RGP_USER_IDS = [8517166, 8789956]; // Михаил Кострюков, Даниил Бровкин
 
 function deriveCategory(type, model, currentCategory) {
@@ -109,7 +98,6 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
       budget = base != null ? base * multiplier : null;
     }
   }
-
   return { budget, forceNoDiscount };
 }
 
@@ -125,28 +113,19 @@ function getCorrectionUpdate(fields, responsibleId) {
   }
 
   const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
+  console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
 
-  console.log(`🔍 Correction check: responsible = ${responsibleName || responsibleId}, correction = ${currentCorrectionName || currentCorrectionId || "empty"}`);
-
-  if (
-    responsibleName &&
-    currentCorrectionName &&
-    currentCorrectionName === responsibleName &&
-    currentCorrectionId !== 983499
-  ) {
+  if (responsibleName && currentCorrectionName && currentCorrectionName === responsibleName && currentCorrectionId !== 983499) {
     console.log("✅ Names match → setting 'Не требуется' (983499)");
     return { field_id: 582983, values: [{ enum_id: 983499 }] };
   }
-
   return null;
 }
 
 function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const custom_fields_values = [];
   let newPrice = null;
-
-  let type = null, model = null, currentDiscount = null, currentSoldPackage = null;
-  let currentCategory = null;
+  let type = null, model = null, currentDiscount = null, currentSoldPackage = null, currentCategory = null;
 
   for (const field of fields) {
     if (!field.values?.length) continue;
@@ -161,7 +140,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix}  iPhone: forcing discount to 'Без скидки'`);
+    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
@@ -169,44 +148,45 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
     console.log(`${logPrefix} 💰 Setting budget: ${lead.price} → ${budget}${promo ? " (x2 promo)" : ""}`);
     newPrice = budget;
   }
-
   return { custom_fields_values, newPrice };
 }
 
 // ===== ДУБЛИ: Вспомогательные функции =====
 
-async function getPhoneFromLead(env, leadId) {
+async function getLeadContactInfo(env, leadId) {
   try {
     const linksRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/links`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    if (!linksRes.ok) return null;
+    if (!linksRes.ok) return { phone: null, contactId: null };
+    
     const linksData = await linksRes.json();
     const contacts = linksData._embedded?.contacts || [];
-    if (contacts.length === 0) return null;
+    if (contacts.length === 0) return { phone: null, contactId: null };
 
     const contactId = contacts[0].id;
     const contactRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    if (!contactRes.ok) return null;
+    if (!contactRes.ok) return { phone: null, contactId };
+    
     const contactData = await contactRes.json();
+    let phone = null;
 
     for (const field of contactData.custom_fields_values || []) {
       if (field.values && field.values.length > 0) {
-        const val = field.values[0].value;
-        if (typeof val === 'string') {
-          const digits = val.replace(/\D/g, '');
-          if (digits.length >= 10 && (digits.startsWith('7') || digits.startsWith('8'))) {
-            return digits.startsWith('8') ? '+7' + digits.slice(1) : '+7' + digits.slice(1);
-          }
+        const val = String(field.values[0].value);
+        const digits = val.replace(/\D/g, '');
+        if (digits.length >= 10 && (digits.startsWith('7') || digits.startsWith('8'))) {
+          phone = digits.startsWith('8') ? '+7' + digits.slice(1) : '+7' + digits.slice(1);
+          break;
         }
       }
     }
-    return null;
+    return { phone, contactId };
   } catch (e) {
-    console.log("❌ Error getting phone:", e.message);
-    return null;
+    console.log("❌ Ошибка получения данных контакта:", e.message);
+    return { phone: null, contactId: null };
   }
 }
 
@@ -216,31 +196,23 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
     if (!notesRes.ok) return 0;
+    
     const notesData = await notesRes.json();
     const notes = notesData._embedded?.notes || [];
-
     let migratedCount = 0;
-    for (const note of notes) {
-      const payload = {
-        note_type: note.note_type,
-        text: note.text,
-        params: note.params || {}
-      };
 
+    for (const note of notes) {
+      const payload = { note_type: note.note_type, text: note.text, params: note.params || {} };
       const createRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.AMO_TOKEN}`,
-          "Content-Type": "application/json",
-          Accept: "application/json"
-        },
+        headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(payload)
       });
       if (createRes.ok) migratedCount++;
     }
     return migratedCount;
   } catch (e) {
-    console.log("❌ Error migrating notes:", e.message);
+    console.log("❌ Ошибка переноса примечаний:", e.message);
     return 0;
   }
 }
@@ -252,41 +224,37 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
     task_type: "call",
     text: taskText,
     responsible_user_id: responsibleUserId,
-    duration: 300,
+    duration: 300, // 5 минут
     complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
   };
 
   try {
     const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.AMO_TOKEN}`,
-        "Content-Type": "application/json",
-        Accept: "application/json"
-      },
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(taskData)
     });
     return res.ok;
   } catch (e) {
-    console.log("❌ Error creating task:", e.message);
+    console.log("❌ Ошибка создания задачи:", e.message);
     return false;
   }
 }
 
 async function handleDuplicates(env, currentLeadId) {
-  console.log(` [Duplicates] Checking lead: ${currentLeadId}`);
+  console.log(`🔍 [Дубликаты] Проверка лида: ${currentLeadId}`);
 
-  const phone = await getPhoneFromLead(env, currentLeadId);
-  if (!phone) {
-    console.log("⏭️ [Duplicates] No phone found, skipping");
+  const { phone, contactId } = await getLeadContactInfo(env, currentLeadId);
+  if (!phone || !contactId) {
+    console.log("⏭️ [Дубликаты] Телефон или контакт не найден, пропускаю");
     return;
   }
 
-  console.log(` [Duplicates] Phone: ${phone}`);
+  console.log(`📞 [Дубликаты] Телефон: ${phone}, Контакт ID: ${contactId}`);
 
   // ⚠️ ВРЕМЕННАЯ ПРОВЕРКА ДЛЯ ТЕСТА (УДАЛИТЬ ПОСЛЕ ТЕСТИРОВАНИЯ)
   if (phone !== TEST_PHONE_NUMBER) {
-    console.log(`️ [Duplicates] Phone ${phone} is not test number, skipping`);
+    console.log(`⏭️ [Дубликаты] Телефон ${phone} не является тестовым (${TEST_PHONE_NUMBER}), пропускаю`);
     return;
   }
 
@@ -295,86 +263,99 @@ async function handleDuplicates(env, currentLeadId) {
   const fromDate = Math.floor(oneMonthAgo.getTime() / 1000);
 
   const leadsRes = await fetch(
-    `https://${env.AMO_DOMAIN}/api/v4/leads?filter[contact_id]=${currentLeadId}&filter[created_at][from]=${fromDate}&limit=250`,
+    `https://${env.AMO_DOMAIN}/api/v4/leads?filter[contact_id]=${contactId}&filter[created_at][from]=${fromDate}&limit=250`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
   );
   const leadsData = await leadsRes.json();
   const allLeads = leadsData._embedded?.leads || [];
 
-  console.log(`📋 [Duplicates] Found ${allLeads.length} total leads for contact in last month`);
+  console.log(`📋 [Дубликаты] Найдено всего сделок у контакта за месяц: ${allLeads.length}`);
 
-  // Фильтруем по воронке, этапу 143 И типу запроса
-  const validLeads = allLeads.filter(lead => {
-    if (lead.pipeline_id !== TARGET_PIPELINE_ID) return false;
-    if (!TARGET_STATUS_IDS.includes(lead.status_id)) return false;
+  // Ищем СТАРУЮ сделку (Техника, 143, нужный тип запроса), которая НЕ является текущей
+  const oldLead = allLeads.find(lead => {
+    if (lead.id === currentLeadId) return false;
+    if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) return false;
+    if (lead.status_id !== OLD_STATUS_ID) return false;
 
-    // Проверяем тип запроса
-    const requestTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
-    const requestType = requestTypeField?.values?.[0]?.enum_id;
-    return requestType && TARGET_REQUEST_TYPES.includes(requestType);
+    const reqTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
+    const reqType = reqTypeField?.values?.[0]?.enum_id;
+    return reqType && TARGET_REQUEST_TYPES.includes(reqType);
   });
 
-  console.log(`✅ [Duplicates] Found ${validLeads.length} valid leads in pipeline ${TARGET_PIPELINE_ID}, status 143, with target request types`);
-
-  if (validLeads.length < 2) {
-    console.log("⏭️ [Duplicates] Less than 2 valid leads, nothing to merge");
+  if (!oldLead) {
+    console.log("⏭️ [Дубликаты] Старая сделка в Технике (143) не найдена. Ничего не делаем.");
     return;
   }
 
-  validLeads.sort((a, b) => a.created_at - b.created_at);
+  console.log(`✅ [Дубликаты] Найдена СТАРАЯ сделка: ${oldLead.id}. Переносим данные в НОВУЮ: ${currentLeadId}`);
 
-  const oldLead = validLeads[0];
-  const newLead = validLeads.find(l => l.id === currentLeadId) || validLeads[validLeads.length - 1];
+  // 1. Переносим примечания ИЗ старой В новую
+  const migratedCount = await migrateNotes(env, oldLead.id, currentLeadId);
+  console.log(`📝 [Дубликаты] Перенесено примечаний: ${migratedCount}`);
 
-  if (oldLead.id === newLead.id) {
-    console.log("⏭️ [Duplicates] Current lead is the oldest one, nothing to merge into");
-    return;
-  }
-
-  console.log(`🔄 [Duplicates] Merging NEW lead ${newLead.id} INTO OLD lead ${oldLead.id}`);
-
-  const migratedCount = await migrateNotes(env, newLead.id, oldLead.id);
-  console.log(` [Duplicates] Migrated ${migratedCount} notes`);
-
+  // 2. Открепляем контакт от СТАРОЙ сделки
   try {
-    await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${newLead.id}/links`, {
+    await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${oldLead.id}/links`, {
       method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${env.AMO_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ to: [{ id: newLead.responsible_user_id, type: "contacts" }] })
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ to: [{ id: contactId, type: "contacts" }] })
     });
-    console.log("🔗 [Duplicates] Detached contact from new lead");
+    console.log("🔗 [Дубликаты] Контакт откреплен от старой сделки");
   } catch (e) {
-    console.log("⚠️ [Duplicates] Could not detach contact:", e.message);
+    console.log("⚠️ [Дубликаты] Ошибка открепления контакта:", e.message);
   }
 
+  // 3. Удаляем СТАРУЮ сделку
   try {
-    const deleteRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${newLead.id}`, {
+    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${oldLead.id}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}` }
     });
-    if (deleteRes.ok) {
-      console.log(`🗑️ [Duplicates] Successfully deleted new lead ${newLead.id}`);
+    if (delRes.ok) {
+      console.log(`🗑️ [Дубликаты] Старая сделка ${oldLead.id} успешно удалена`);
     } else {
-      console.log("❌ [Duplicates] Failed to delete new lead");
+      console.log("❌ [Дубликаты] Не удалось удалить старую сделку");
     }
   } catch (e) {
-    console.log("❌ [Duplicates] Error deleting lead:", e.message);
+    console.log("❌ [Дубликаты] Ошибка удаления старой сделки:", e.message);
   }
 
-  const taskText = `🔄 Объединение дубля: примечания и звонки перенесены из удаленной сделки #${newLead.id}`;
+  // 4. Перемещаем НОВУЮ сделку в Технику на этап 47054479
+  try {
+    const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipeline_id: TECHNIQUE_PIPELINE_ID,
+        status_id: NEW_STATUS_ID
+      })
+    });
+    if (patchRes.ok) {
+      console.log(`🚀 [Дубликаты] Новая сделка ${currentLeadId} перемещена в Технику, этап 47054479`);
+    }
+  } catch (e) {
+    console.log("❌ [Дубликаты] Ошибка перемещения новой сделки:", e.message);
+  }
 
-  await createMergeTask(env, oldLead.id, oldLead.responsible_user_id, taskText);
-  console.log(`📌 [Duplicates] Task created for responsible: ${oldLead.responsible_user_id}`);
+  // 5. Создаем задачи на НОВОЙ сделке
+  // Получаем актуальные данные новой сделки, чтобы узнать ответственного после перемещения
+  const newLeadDataRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
+    headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+  });
+  const newLeadData = await newLeadDataRes.json();
+  const responsibleId = newLeadData.responsible_user_id;
+
+  const taskText = `🔄 Объединение дубля: примечания перенесены из удаленной старой сделки #${oldLead.id}`;
+  
+  await createMergeTask(env, currentLeadId, responsibleId, taskText);
+  console.log(`📌 [Дубликаты] Задача создана для ответственного новой сделки: ${responsibleId}`);
 
   for (const rgpId of RGP_USER_IDS) {
-    await createMergeTask(env, oldLead.id, rgpId, `🔔 Контроль РГП: объединение сделок #${newLead.id} → #${oldLead.id}`);
-    console.log(`📌 [Duplicates] Task created for RGP: ${rgpId}`);
+    await createMergeTask(env, currentLeadId, rgpId, `🔔 Контроль РГП: перенос сделки из Услуги в Технику. Старая сделка #${oldLead.id} удалена.`);
+    console.log(`📌 [Дубликаты] Задача создана для РГП: ${rgpId}`);
   }
 
-  console.log("✅ [Duplicates] Merge process completed successfully");
+  console.log("✅ [Дубликаты] Процесс объединения успешно завершен");
 }
 
 export default {
@@ -400,8 +381,8 @@ export default {
       // =========================
       if (params.has("leads[update][0][id]")) {
         console.log("📦 UPDATE EVENT");
-
         const leadId = Number(params.get("leads[update][0][id]"));
+        
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
         });
@@ -414,7 +395,6 @@ export default {
         const fields = lead.custom_fields_values || [];
 
         let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
-
         for (const field of fields) {
           if (!field.values?.length) continue;
           if (field.field_id === 466253) type = field.values[0].enum_id;
@@ -436,16 +416,9 @@ export default {
         }
 
         const custom_fields_values = [];
-
-        if (currentCategory !== targetCategory) {
-          custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
-        }
-        if (targetPackage && currentPackage !== targetPackage) {
-          custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
-        }
-        if (soldPackage && currentSoldPackage !== soldPackage) {
-          custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
-        }
+        if (currentCategory !== targetCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
+        if (targetPackage && currentPackage !== targetPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
+        if (soldPackage && currentSoldPackage !== soldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
 
         const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
         if (correctionUpdate) custom_fields_values.push(correctionUpdate);
@@ -468,13 +441,13 @@ export default {
         const patchBody = { custom_fields_values };
         if (newPrice != null) patchBody.price = newPrice;
 
-        const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
           body: JSON.stringify(patchBody)
         });
 
-        console.log("📦 Update PATCH:", patchRes.status);
+        console.log("📦 Update PATCH done");
         ctx.waitUntil(handleDuplicates(env, leadId));
         return new Response("OK");
       }
@@ -487,8 +460,7 @@ export default {
         return new Response("OK");
       }
 
-      console.log(" Event type: STATUS CHANGE");
-
+      console.log("📋 Event type: STATUS CHANGE");
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
@@ -524,11 +496,10 @@ export default {
       const customFieldsUpdates = [];
 
       if (pipelineId === 5276629 && newStatusId === 142) {
-        console.log(" Status 142 processing");
+        console.log("🧹 Status 142 processing");
         customFieldsUpdates.push({ field_id: 573457, values: null });
 
         const effectiveCategory = deriveCategory(type, model, currentCategory);
-
         let targetRequestType = null;
         if (effectiveCategory) {
           if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
@@ -541,7 +512,7 @@ export default {
 
         const promo = isPromo(leadData.name);
         if (promo) console.log("🎯 Promo deal detected → budget x2");
-
+        
         const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
         customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
@@ -586,6 +557,7 @@ export default {
         console.log("⏭️ No updates needed");
       }
 
+      // ЗАПУСК ПРОВЕРКИ НА ДУБЛИ (асинхронно)
       ctx.waitUntil(handleDuplicates(env, leadId));
       return new Response("OK");
 
