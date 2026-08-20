@@ -40,11 +40,25 @@ const ANDROID_MODELS = [975979, 976893];
 const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
 
 // ===== ДУБЛИ (Сущи) =====
-const TEST_PHONE_NUMBER = "+79991409013"; // ⚠️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
+const TEST_PHONE_NUMBER = "+79991409013"; // ️ УДАЛИТЬ ПОСЛЕ ТЕСТОВ!
 const TECHNIQUE_PIPELINE_ID = 5276629;
 const OLD_STATUS_ID = 143; // Закрыто и не реализовано
 const TARGET_REQUEST_TYPES = [931809, 938373, 957159, 931811];
 const RGP_USER_IDS = [8517166, 8789956]; // Михаил Кострюков, Даниил Бровкин
+
+// ===== RATE LIMITING: не более 7 запросов в секунду =====
+let lastRequestTime = 0;
+const MIN_INTERVAL_MS = 160; // ~6 запросов в секунду (с запасом)
+
+async function rateLimitedFetch(url, options = {}) {
+  const now = Date.now();
+  const timeSinceLast = now - lastRequestTime;
+  if (timeSinceLast < MIN_INTERVAL_MS) {
+    await new Promise(resolve => setTimeout(resolve, MIN_INTERVAL_MS - timeSinceLast));
+  }
+  lastRequestTime = Date.now();
+  return fetch(url, options);
+}
 
 function deriveCategory(type, model, currentCategory) {
   let target = currentCategory;
@@ -139,7 +153,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix}  iPhone: forcing discount to 'Без скидки'`);
+    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
@@ -166,7 +180,7 @@ async function sleep(ms) {
 
 async function getLeadContactInfo(env, leadId) {
   try {
-    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
+    const leadRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
     if (!leadRes.ok) return { phone: null, contactId: null };
@@ -176,7 +190,7 @@ async function getLeadContactInfo(env, leadId) {
     if (contacts.length === 0) return { phone: null, contactId: null };
 
     const contactId = contacts[0].id;
-    const contactRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}`, {
+    const contactRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
     if (!contactRes.ok) return { phone: null, contactId };
@@ -201,8 +215,8 @@ async function getLeadContactInfo(env, leadId) {
 
 async function migrateNotes(env, fromLeadId, toLeadId) {
   try {
-    console.log(` Чтение примечаний ИЗ сделки ID: ${fromLeadId}`);
-    const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
+    console.log(`📥 Чтение примечаний ИЗ сделки ID: ${fromLeadId}`);
+    const res = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${fromLeadId}/notes?limit=250`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
     if (!res.ok) return 0;
@@ -228,16 +242,15 @@ async function migrateNotes(env, fromLeadId, toLeadId) {
         params: note.params || {}
       }];
 
-      console.log(`📝 ДЕЙСТВИЕ: Создаем примечание В сделке ID: ${toLeadId}. Текст: "${payload[0].text}"`);
+      console.log(` ДЕЙСТВИЕ: Создаем примечание В сделке ID: ${toLeadId}`);
 
-      const createRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
+      const createRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${toLeadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       
-      const resText = await createRes.text();
-      console.log(`📝 ОТВЕТ amoCRM на примечание: ${createRes.status} - ${resText}`);
+      console.log(` ОТВЕТ amoCRM на примечание: ${createRes.status}`);
       
       if (createRes.ok) count++;
     }
@@ -262,14 +275,13 @@ async function createMergeTask(env, leadId, responsibleUserId, taskText) {
       complete_till: Math.floor((Date.now() + 5 * 60 * 1000) / 1000)
     }];
 
-    const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
+    const res = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/tasks`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
     
-    const resText = await res.text();
-    console.log(`📌 ОТВЕТ amoCRM на задачу: ${res.status} - ${resText}`);
+    console.log(`📌 ОТВЕТ amoCRM на задачу: ${res.status}`);
     
     if (!res.ok) {
       console.log(`️ Не удалось создать задачу`);
@@ -301,53 +313,61 @@ async function handleDuplicates(env, currentLeadId) {
   const now = new Date();
   const fromDate = Math.floor(new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).getTime() / 1000);
 
-  const leadsRes = await fetch(
-    `https://${env.AMO_DOMAIN}/api/v4/leads?filter[contact_id]=${contactId}&filter[created_at][from]=${fromDate}&limit=250`,
+  const queryParams = new URLSearchParams({
+    'filter[contact_id]': contactId,
+    'filter[pipeline_id]': TECHNIQUE_PIPELINE_ID,
+    'filter[status_id]': OLD_STATUS_ID,
+    'limit': '50'
+  });
+
+  console.log(` [Дубликаты] Ищем сделки контакта в воронке ${TECHNIQUE_PIPELINE_ID} и статусе ${OLD_STATUS_ID}...`);
+  
+  const leadsRes = await rateLimitedFetch(
+    `https://${env.AMO_DOMAIN}/api/v4/leads?${queryParams.toString()}`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
   );
   
-  if (!leadsRes.ok) return;
+  if (!leadsRes.ok) {
+    console.log(`❌ Ошибка запроса сделок: ${leadsRes.status}`);
+    return;
+  }
   
   const leadsText = await leadsRes.text();
-  if (!leadsText || leadsText.trim() === "") return;
+  if (!leadsText || leadsText.trim() === "") {
+    console.log("⏭️ [Дубликаты] Подходящих сделок не найдено (пустой ответ)");
+    return;
+  }
   
   let leadsData;
   try {
     leadsData = JSON.parse(leadsText);
   } catch (e) {
+    console.log("❌ Ошибка парсинга JSON сделок");
     return;
   }
   
   const allLeads = leadsData._embedded?.leads || [];
-  console.log(`📋 [Дубликаты] Найдено сделок у контакта: ${allLeads.length}`);
+  console.log(`📋 [Дубликаты] Найдено подходящих сделок (воронка+статус): ${allLeads.length}`);
 
-  // 🔥 Ищем старую сделку И СРАЗУ проверяем наличие контакта
   let oldLead = null;
+  
   for (const lead of allLeads) {
     if (lead.id === currentLeadId) {
-      console.log(`️ Пропускаем текущую сделку ${lead.id}`);
-      continue;
-    }
-    if (lead.pipeline_id !== TECHNIQUE_PIPELINE_ID) {
-      console.log(`⏭️ Сделка ${lead.id}: не та воронка (${lead.pipeline_id})`);
-      continue;
-    }
-    if (lead.status_id !== OLD_STATUS_ID) {
-      console.log(`️ Сделка ${lead.id}: не тот статус (${lead.status_id})`);
+      console.log(`⏭️ Пропускаем текущую новую сделку ${lead.id}`);
       continue;
     }
 
     const reqTypeField = lead.custom_fields_values?.find(f => f.field_id === 466253);
     const reqType = reqTypeField?.values?.[0]?.enum_id;
+    
     if (!reqType || !TARGET_REQUEST_TYPES.includes(reqType)) {
       console.log(`️ Сделка ${lead.id}: не тот тип запроса (${reqType})`);
       continue;
     }
 
-    // 🔥 ПРОВЕРЯЕМ, что контакт действительно привязан к этой сделке
-    console.log(`🔍 Проверяем сделку ${lead.id} на наличие контакта ${contactId}...`);
+    console.log(` Проверяем сделку ${lead.id} на наличие контакта ${contactId}...`);
     try {
-      const checkRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${lead.id}?with=contacts`, {
+      const checkRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${lead.id}?with=contacts`, {
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
       });
       const checkData = await checkRes.json();
@@ -367,7 +387,7 @@ async function handleDuplicates(env, currentLeadId) {
   }
 
   if (!oldLead) {
-    console.log("⏭️ [Дубликаты] Не найдена старая сделка с контактом в Технике (143).");
+    console.log("⏭️ [Дубликаты] Не найдена старая сделка с контактом в Технике (143) с нужным типом запроса.");
     return;
   }
 
@@ -381,42 +401,42 @@ async function handleDuplicates(env, currentLeadId) {
   console.log(`🔄 [Дубликаты] ШАГ 2: Открепление контакта...`);
   console.log(`🔗 ДЕЙСТВИЕ: Открепляем контакт ID: ${contactId} ОТ сделки ID: ${currentLeadId}`);
   try {
-    const detachRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
+    const detachRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}/links`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ to: [{ id: parseInt(contactId), type: "contacts" }] })
     });
     const detachText = await detachRes.text();
-    console.log(`🔗 ОТВЕТ открепления: ${detachRes.status} - ${detachText}`);
+    console.log(`🔗 ОТВЕТ открепления: ${detachRes.status}`);
     
     if (detachRes.ok) {
       console.log(`✅ [Дубликаты] Контакт успешно откреплен от НОВОЙ сделки`);
     } else {
-      console.log(`⚠️ [Дубликаты] Ошибка открепления контакта`);
+      console.log(`⚠️ [Дубликаты] Ошибка открепления контакта. Ответ: ${detachText}`);
     }
   } catch (e) {
-    console.log("️ [Дубликаты] Ошибка открепления:", e.message);
+    console.log("⚠️ [Дубликаты] Ошибка открепления:", e.message);
   }
 
   console.log(`🔄 [Дубликаты] ШАГ 3: Удаление новой сделки...`);
-  console.log(`🗑️ ДЕЙСТВИЕ: Удаляем (is_deleted: true) сделку ID: ${currentLeadId}`);
+  console.log(`️ ДЕЙСТВИЕ: Удаляем (is_deleted: true) сделку ID: ${currentLeadId}`);
   try {
-    const delRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
+    const delRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${currentLeadId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ is_deleted: true })
     });
     
     const delText = await delRes.text();
-    console.log(`🗑️ ОТВЕТ на удаление: ${delRes.status} - ${delText}`);
+    console.log(`🗑️ ОТВЕТ на удаление: ${delRes.status}`);
     
     if (delRes.ok || delRes.status === 204) {
       console.log(`✅ [Дубликаты] НОВАЯ сделка ${currentLeadId} успешно помечена как УДАЛЕННАЯ`);
     } else {
-      console.log(`❌ [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}`);
+      console.log(` [Дубликаты] Не удалось удалить новую сделку: ${delRes.status}. Ответ: ${delText}`);
     }
   } catch (e) {
-    console.log(" [Дубликаты] Ошибка удаления:", e.message);
+    console.log("❌ [Дубликаты] Ошибка удаления:", e.message);
   }
 
   console.log(`🔄 [Дубликаты] ШАГ 4: Создание задач...`);
@@ -458,7 +478,7 @@ export default {
         const leadId = Number(params.get("leads[update][0][id]"));
         console.log("📦 UPDATE EVENT:", leadId);
         
-        const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
+        const leadRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
         });
         if (!leadRes.ok) return new Response("OK");
@@ -507,7 +527,7 @@ export default {
           const patchBody = { custom_fields_values };
           if (newPrice != null) patchBody.price = newPrice;
 
-          await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+          await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
             method: "PATCH",
             headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
             body: JSON.stringify(patchBody)
@@ -531,7 +551,7 @@ export default {
 
         if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
 
-        const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
+        const leadDetailsRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
         });
         if (!leadDetailsRes.ok) return new Response("OK");
@@ -589,7 +609,7 @@ export default {
         if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
           if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
-          await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+          await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
             method: "PATCH",
             headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
             body: JSON.stringify(patchPayload)
