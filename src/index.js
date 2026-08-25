@@ -48,7 +48,7 @@ const ANDROID_MODELS = [975979, 976893];
 const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
 
 // ===== НОВАЯ ЛОГИКА ДУБЛЕЙ (ТЕСТОВЫЙ РЕЖИМ) =====
-const TEST_PHONE_NUMBER = "89991409013";
+const TEST_PHONE_NORMALIZED = "79991409013"; // Нормализованный вид номера +7 999 140-90-13
 const TARGET_PIPELINE_OLD = 5276629;
 const TARGET_STATUS_OLD = 143;
 const FIELD_REQUEST_TYPE = 466253;
@@ -123,7 +123,7 @@ function getCorrectionUpdate(fields, responsibleId) {
 
   const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
 
-  console.log(`🔍 Correction check: responsible = ${responsibleName || responsibleId}, correction = ${currentCorrectionName || currentCorrectionId || "empty"}`);
+  console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
 
   if (
     responsibleName &&
@@ -131,7 +131,7 @@ function getCorrectionUpdate(fields, responsibleId) {
     currentCorrectionName === responsibleName &&
     currentCorrectionId !== 983499
   ) {
-    console.log("✅ Names match → setting 'Не требуется' (983499)");
+    console.log("✅ Имена совпадают → установка 'Не требуется' (983499)");
     return { field_id: 582983, values: [{ enum_id: 983499 }] };
   }
 
@@ -158,12 +158,12 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix} 🧾 iPhone: forcing discount to 'Без скидки'`);
+    console.log(`${logPrefix} 🧾 iPhone: принудительная установка скидки 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
   if (budget != null && lead.price !== budget) {
-    console.log(`${logPrefix} 💰 Setting budget: ${lead.price} → ${budget}${promo ? " (x2 promo)" : ""}`);
+    console.log(`${logPrefix} 💰 Установка бюджета: ${lead.price} → ${budget}${promo ? " (x2 акция)" : ""}`);
     newPrice = budget;
   }
 
@@ -171,41 +171,78 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 }
 
 // ==========================================
-// 🆕 НОВАЯ ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ
+// 🆕 НОВАЯ ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ С УМНЫМ ПОИСКОМ ТЕЛЕФОНА
 // ==========================================
 async function checkDuplicatesForNewLead(leadId, env) {
-  console.log(`🔍 [Duplicate Check] Starting for lead ${leadId}`);
+  console.log(`🔍 [Проверка дубликатов] Начинаем с лида ${leadId}`);
 
   // 1. Получаем данные текущей (новой) сделки и её контакты
   const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
-  if (!leadRes.ok) return null;
+  if (!leadRes.ok) {
+    console.log(`❌ Не удалось получить лид ${leadId}: ${leadRes.status}`);
+    return null;
+  }
   const lead = await leadRes.json();
 
   // 2. Извлекаем и нормализуем номер телефона
   let phone = null;
   if (lead._embedded?.contacts?.length > 0) {
     const contactId = lead._embedded.contacts[0].id;
+    console.log(`📞 Ищем телефон в контакте ID: ${contactId}`);
+    
     const contactRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${contactId}?with=custom_fields_values`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
+    
     if (contactRes.ok) {
       const contact = await contactRes.json();
-      const phoneFieldId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7; // 7 - стандартный ID телефона в amo
-      const phoneField = contact.custom_fields_values?.find(f => f.field_id === phoneFieldId);
-      if (phoneField?.values?.length) {
-        phone = phoneField.values[0].value.replace(/\D/g, '');
-        if (phone.startsWith('8')) phone = '7' + phone.slice(1);
+      
+      // 🔍 ЛОГИРОВАНИЕ: смотрим, какие вообще поля есть у контакта (поможет при отладке)
+      console.log("📞 Все custom_fields_values контакта:", JSON.stringify(contact.custom_fields_values));
+
+      const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
+      let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
+
+      // 🛡️ УМНЫЙ ПОИСК: если в стандартном поле ничего нет, ищем по содержимому во всех полях
+      if (!phoneField?.values?.length) {
+        console.log(`⚠️ Поле ${targetPhoneId} пустое. Ищем номер перебором всех полей контакта...`);
+        phoneField = contact.custom_fields_values?.find(f => {
+          const val = f.values?.[0]?.value;
+          // Ищем совпадение по ключевым цифрам номера в любом формате
+          return val && (val.includes('9991409013') || val.includes('+79991409013') || val.includes('89991409013'));
+        });
       }
+
+      if (phoneField?.values?.length) {
+        let rawPhone = phoneField.values[0].value;
+        console.log(`✅ Сырой номер найден: "${rawPhone}"`);
+        
+        // Нормализация: убираем все кроме цифр
+        phone = rawPhone.replace(/\D/g, '');
+        // Если начинается с 8 и длина 11, меняем на 7
+        if (phone.startsWith('8') && phone.length === 11) {
+          phone = '7' + phone.slice(1);
+        }
+        console.log(`✅ Нормализованный номер для сравнения: ${phone}`);
+      } else {
+        console.log("❌ Номер телефона не найден ни в одном поле контакта!");
+      }
+    } else {
+      console.log(`❌ Не удалось получить контакт ${contactId}: ${contactRes.status}`);
     }
+  } else {
+    console.log("⚠️ У лида нет привязанных контактов (_embedded.contacts пуст)");
   }
 
-  // 3. ТЕСТОВЫЙ РЕЖИМ: если номер не совпадает, сразу выходим
-  if (phone !== TEST_PHONE_NUMBER) {
-    console.log(`⏭️ [Duplicate Check] Phone ${phone} does not match test number ${TEST_PHONE_NUMBER}. Skipping.`);
+  // 3. ТЕСТОВЫЙ РЕЖИМ: сравниваем с нормализованным тестовым номером
+  if (phone !== TEST_PHONE_NORMALIZED) {
+    console.log(`⏭️ [Проверка дубликатов] Телефон "${phone}" не соответствует тестовому "${TEST_PHONE_NORMALIZED}". Пропуск.`);
     return null;
   }
+
+  console.log("🎯 Тестовый номер совпал! Начинаем поиск старых сделок...");
 
   // 4. Ищем контакты по этому номеру в amoCRM
   const searchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts?query=${phone}`, {
@@ -240,7 +277,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
 
       // 🟢 Если тип запроса в старой сделке один из разрешенных, меняем НОВУЮ сделку
       if (ALLOWED_OLD_TYPES.includes(currentType)) {
-        console.log(`✅ [Duplicate Check] Found old lead ${oldLead.id} with allowed type ${currentType}. Will update NEW lead.`);
+        console.log(`✅ [Проверка дубликатов] Найдена старая сделка ${oldLead.id} с разрешенным типом ${currentType}. Будем обновлять НОВУЮ сделку.`);
         return {
           custom_fields_values: [{ field_id: FIELD_REQUEST_TYPE, values: [{ enum_id: NEW_TYPE_VALUE }] }]
         };
@@ -249,7 +286,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
   }
 
-  console.log("⏭️ [Duplicate Check] No eligible old leads found or type didn't match.");
+  console.log("⏭️ [Проверка дубликатов] Подходящих старых сделок не найдено или тип не совпал.");
   return null;
 }
 
@@ -257,7 +294,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
 export default {
   async fetch(request, env, ctx) {
     console.log("======================");
-    console.log("🔥 WORKER START |", request.method);
+    console.log("🔥 ЗАПУСК РАБОЧЕГО ПРОЦЕССА |", request.method);
     console.log("======================");
 
     if (request.method === "GET") return new Response("Webhook works");
@@ -276,7 +313,7 @@ export default {
       // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
       // =========================
       if (params.has("leads[update][0][id]")) {
-        console.log("📦 UPDATE EVENT");
+        console.log("📦 ОБНОВЛЕНИЕ СОБЫТИЯ");
 
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
@@ -330,14 +367,14 @@ export default {
         let newPrice = null;
         if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
           const promo = isPromo(lead.name);
-          console.log(`📊 Budget recalculation for status 142${promo ? " (x2 promo)" : ""}`);
+          console.log(`📊 Пересчет бюджета для статуса 142${promo ? " (x2 акция)" : ""}`);
           const budgetUpdates = getBudgetUpdates(lead, fields, promo, "[UPDATE]");
           custom_fields_values.push(...budgetUpdates.custom_fields_values);
           newPrice = budgetUpdates.newPrice;
         }
 
         if (custom_fields_values.length === 0 && newPrice == null) {
-          console.log("⏭️ Nothing to update");
+          console.log("⏭️ Обновлять нечего");
           return new Response("OK");
         }
 
@@ -362,7 +399,7 @@ export default {
         return new Response("OK");
       }
 
-      console.log("📋 Event type: STATUS CHANGE");
+      console.log("📋 Тип события: ИЗМЕНЕНИЕ СТАТУСА");
 
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
@@ -371,7 +408,7 @@ export default {
       const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]") || params.get("leads[status][0][updated_by]"));
 
-      console.log("Lead:", leadId, "|", oldPipelineId, oldStatusId, "→", pipelineId, newStatusId);
+      console.log("Ведущий:", leadId, "|", oldPipelineId, oldStatusId, "→", pipelineId, newStatusId);
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
 
@@ -400,7 +437,7 @@ export default {
 
       // --- Статус 142 (Купил) ---
       if (pipelineId === 5276629 && newStatusId === 142) {
-        console.log("🧹 Status 142 processing");
+        console.log("🧹 Обработка статуса 142");
         customFieldsUpdates.push({ field_id: 573457, values: null });
 
         const effectiveCategory = deriveCategory(type, model, currentCategory);
@@ -416,7 +453,7 @@ export default {
         }
 
         const promo = isPromo(leadData.name);
-        if (promo) console.log("🎯 Promo deal detected → budget x2");
+        if (promo) console.log("🎯 Обнаружена акционная сделка → бюджет x2");
         
         const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
         customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
@@ -430,17 +467,17 @@ export default {
       );
 
       if (matchedRule) {
-        console.log("✅ RULE MATCHED! Triggering logic for PNL exit.");
+        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Запускающая логика для выхода из PNL.");
         
         if (userId && actualResponsibleId !== userId) {
-          console.log(`✅ Responsible: ${actualResponsibleId} → ${userId}`);
+          console.log(`✅ Ответственный: ${actualResponsibleId} → ${userId}`);
           patchPayload.responsible_user_id = userId;
         }
 
         // 🆕 ЗАПУСК ПРОВЕРКИ ДУБЛЕЙ
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
-          console.log("🔄 Applying duplicate check updates to NEW lead.");
+          console.log("🔄 Применение обновлений из проверки дубликатов к НОВОЙ сделке.");
           customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
         }
       }
@@ -450,7 +487,7 @@ export default {
           [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         const today = new Date(new Date().setHours(0, 0, 0, 0));
         patchPayload.created_at = Math.floor(today.getTime() / 1000);
-        console.log("📅 Updating created_at to today");
+        console.log("📅 Обновление created_at на сегодняшнее число");
       }
 
       // --- Проверка корректировки ---
@@ -461,7 +498,7 @@ export default {
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
-        console.log("🚀 Sending COMBINED PATCH to lead:", leadId);
+        console.log("🚀 Отправка СБОРНОГО ПАТЧА для лида:", leadId);
         const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
@@ -469,12 +506,12 @@ export default {
         });
 
         if (!updateRes.ok) {
-          console.log("❌ COMBINED PATCH ERROR:", await updateRes.text());
+          console.log("❌ ОШИБКА СБОРНОГО ПАТЧА:", await updateRes.text());
           return new Response("ERROR", { status: 500 });
         }
-        console.log("✅ COMBINED PATCH SUCCESS");
+        console.log("✅ СБОРНЫЙ ПАТЧ УСТАНОВЛЕН УСПЕШНО");
       } else {
-        console.log("⏭️ No updates needed");
+        console.log("⏭️ Ничего не нужно обновлять");
       }
 
       return new Response("OK");
