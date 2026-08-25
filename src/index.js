@@ -52,8 +52,8 @@ const TEST_PHONE_NORMALIZED = "79991409013";
 const TARGET_PIPELINE_OLD = 5276629;
 const TARGET_STATUS_OLD = 143;
 const FIELD_REQUEST_TYPE = 466253;
-const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
-const NEW_TYPE_VALUE = 931811;
+const ALLOWED_OLD_TYPES = [931809, 938373, 957159]; // Покупка новой, Покупка БУ, Трейд-ин
+const NEW_TYPE_VALUE = 931811; // Сущ заказ / Гарантия техника
 
 function deriveCategory(type, model, currentCategory) {
   let target = currentCategory;
@@ -170,9 +170,13 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   return { custom_fields_values, newPrice };
 }
 
+// ==========================================
+// 🆕 НОВАЯ ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ (ПРЯМОЙ ПОИСК ПО СДЕЛКАМ)
+// ==========================================
 async function checkDuplicatesForNewLead(leadId, env) {
   console.log(`🔍 [Проверка дубликатов] Начинаем с лида ${leadId}`);
 
+  // 1. Получаем данные текущей (новой) сделки и её контакты
   const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
@@ -182,6 +186,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
   }
   const lead = await leadRes.json();
 
+  // 2. Извлекаем и нормализуем номер телефона
   let phone = null;
   if (lead._embedded?.contacts?.length > 0) {
     const contactId = lead._embedded.contacts[0].id;
@@ -214,13 +219,16 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
   }
 
+  // 3. ТЕСТОВЫЙ РЕЖИМ
   if (phone !== TEST_PHONE_NORMALIZED) {
     console.log(`⏭️ [Проверка дубликатов] Телефон "${phone}" не соответствует тестовому "${TEST_PHONE_NORMALIZED}". Пропуск.`);
     return null;
   }
 
-  console.log("🎯 Тестовый номер совпал! Начинаем глобальный поиск старых сделок...");
+  console.log("🎯 Тестовый номер совпал! Начинаем глобальный поиск старых сделок по этому номеру...");
 
+  // 4. ГЛОБАЛЬНЫЙ ПОИСК СДЕЛОК ПО НОМЕРУ ТЕЛЕФОНА (а не через ID контакта)
+  // Это найдет сделки, даже если контакт к ним привязан криво или не привязан вовсе, но номер есть в системе
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
@@ -233,7 +241,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
   const searchLeadsData = await searchLeadsRes.json();
   const foundLeads = searchLeadsData._embedded?.leads || [];
   
-  console.log(`🔎 Найдено сделок по фильтру: ${foundLeads.length}`);
+  console.log(`🔎 Найдено сделок по фильтру (воронка ${TARGET_PIPELINE_OLD}, статус ${TARGET_STATUS_OLD}): ${foundLeads.length}`);
 
   const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
 
@@ -241,18 +249,12 @@ async function checkDuplicatesForNewLead(leadId, env) {
     console.log(`📋 Анализ старой сделки ID: ${oldLead.id}`);
 
     if (oldLead.id === leadId) {
-      console.log(`   ⏭️ Пропуск: это та же самая сделка.`);
-      continue;
-    }
-    
-    // 🛡️ ЗАЩИТА: игнорируем сделки, которые новее текущей
-    if (oldLead.created_at > lead.created_at) {
-      console.log(`   ⏭️ Пропуск: сделка новее текущей (защита от обратного срабатывания).`);
+      console.log(`   ⏭️ Пропуск: это та же самая новая сделка.`);
       continue;
     }
     
     if (oldLead.created_at < cutoffDate) {
-      console.log(`   ⏭️ Пропуск: сделка старше 30 дней.`);
+      console.log(`   ⏭️ Пропуск: сделка старше 30 дней (created_at: ${oldLead.created_at}, cutoff: ${cutoffDate}).`);
       continue;
     }
 
@@ -261,19 +263,20 @@ async function checkDuplicatesForNewLead(leadId, env) {
     console.log(`   ℹ️ Тип запроса в старой сделке: ${currentType}`);
 
     if (ALLOWED_OLD_TYPES.includes(currentType)) {
-      console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id} с разрешенным типом ${currentType}.`);
+      console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id} с разрешенным типом ${currentType}. Будем обновлять НОВУЮ сделку.`);
       return {
         custom_fields_values: [{ field_id: FIELD_REQUEST_TYPE, values: [{ enum_id: NEW_TYPE_VALUE }] }]
       };
     } else {
-      console.log(`   ⏭️ Пропуск: тип запроса (${currentType}) не входит в разрешенные.`);
+      console.log(`   ⏭️ Пропуск: тип запроса (${currentType}) не входит в разрешенные [${ALLOWED_OLD_TYPES.join(', ')}].`);
     }
   }
 
-  console.log("⏭️ [Проверка дубликатов] Подходящих старых сделок не найдено.");
+  console.log("⏭️ [Проверка дубликатов] Подходящих старых сделок не найдено. Проверьте логи выше, чтобы понять причину пропуска.");
   return null;
 }
 
+// ===== ОСНОВНОЙ WORKER =====
 export default {
   async fetch(request, env, ctx) {
     console.log("======================");
@@ -292,6 +295,9 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
+      // =========================
+      // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
+      // =========================
       if (params.has("leads[update][0][id]")) {
         console.log("📦 ОБНОВЛЕНИЕ СОБЫТИЯ");
 
@@ -366,6 +372,9 @@ export default {
         return new Response("OK");
       }
 
+      // =========================
+      // 2. СМЕНА СТАТУСА (leads[status])
+      // =========================
       if (!params.has("leads[status][0][id]")) {
         return new Response("OK");
       }
@@ -403,6 +412,7 @@ export default {
       const patchPayload = {};
       const customFieldsUpdates = [];
 
+      // --- Статус 142 (Купил) ---
       if (pipelineId === 5276629 && newStatusId === 142) {
         customFieldsUpdates.push({ field_id: 573457, values: null });
 
@@ -423,35 +433,39 @@ export default {
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
 
+      // --- Смена ответственного по RULES и 🆕 ПРОВЕРКА ДУБЛЕЙ ---
       const matchedRule = RULES.find(rule =>
         rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
         rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
       );
 
-      // 🛡️ ЗАЩИТА: проверка дублей запускается ТОЛЬКО если сделка только что вышла из ПНЛ
-      if (matchedRule && oldStatusId === 47069740) {
-        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Сделка вышла из ПНЛ. Запускаем проверку дублей.");
+      if (matchedRule) {
+        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Запускающая логика для выхода из PNL.");
         
         if (userId && actualResponsibleId !== userId) {
           patchPayload.responsible_user_id = userId;
         }
 
+        // 🆕 ЗАПУСК ПРОВЕРКИ ДУБЛЕЙ
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
-          console.log("🔄 Применение обновлений из проверки дубликатов.");
+          console.log("🔄 Применение обновлений из проверки дубликатов к НОВОЙ сделке.");
           customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
         }
       }
 
+      // --- Обновление даты ---
       if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 &&
           [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         const today = new Date(new Date().setHours(0, 0, 0, 0));
         patchPayload.created_at = Math.floor(today.getTime() / 1000);
       }
 
+      // --- Проверка корректировки ---
       const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
       if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
 
+      // --- Один объединённый PATCH ---
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
