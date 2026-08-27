@@ -48,7 +48,6 @@ const ANDROID_MODELS = [975979, 976893];
 const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
 
 // ===== ЛОГИКА ДУБЛЕЙ =====
-const TEST_PHONE_NORMALIZED = "79991409013";
 const TARGET_PIPELINE_OLD = 5276629;
 const TARGET_STATUS_OLD = 143;
 const FIELD_REQUEST_TYPE = 466253;
@@ -171,7 +170,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 }
 
 // ==========================================
-// 🆕 НОВАЯ ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ (ПРЯМОЙ ПОИСК ПО СДЕЛКАМ)
+// ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ (РАБОТАЕТ ДЛЯ ВСЕХ НОМЕРОВ)
 // ==========================================
 async function checkDuplicatesForNewLead(leadId, env) {
   console.log(`🔍 [Проверка дубликатов] Начинаем с лида ${leadId}`);
@@ -201,10 +200,12 @@ async function checkDuplicatesForNewLead(leadId, env) {
       const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
       let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
 
+      // Умный поиск: если в стандартном поле нет, ищем по содержимому во всех полях
       if (!phoneField?.values?.length) {
         phoneField = contact.custom_fields_values?.find(f => {
           const val = f.values?.[0]?.value;
-          return val && (val.includes('9991409013') || val.includes('+79991409013') || val.includes('89991409013'));
+          // Ищем любые цифры, похожие на телефон (минимум 10 цифр)
+          return val && val.replace(/\D/g, '').length >= 10;
         });
       }
 
@@ -214,21 +215,20 @@ async function checkDuplicatesForNewLead(leadId, env) {
         if (phone.startsWith('8') && phone.length === 11) {
           phone = '7' + phone.slice(1);
         }
-        console.log(`✅ Нормализованный номер для сравнения: ${phone}`);
+        console.log(`✅ Нормализованный номер для поиска: ${phone}`);
       }
     }
   }
 
-  // 3. ТЕСТОВЫЙ РЕЖИМ
-  if (phone !== TEST_PHONE_NORMALIZED) {
-    console.log(`⏭️ [Проверка дубликатов] Телефон "${phone}" не соответствует тестовому "${TEST_PHONE_NORMALIZED}". Пропуск.`);
+  // 3. Если номер не найден, выходим
+  if (!phone || phone.length < 11) {
+    console.log("⏭️ [Проверка дубликатов] Корректный номер телефона не найден. Пропуск.");
     return null;
   }
 
-  console.log("🎯 Тестовый номер совпал! Начинаем глобальный поиск старых сделок по этому номеру...");
+  console.log(`🎯 Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
 
-  // 4. ГЛОБАЛЬНЫЙ ПОИСК СДЕЛОК ПО НОМЕРУ ТЕЛЕФОНА (а не через ID контакта)
-  // Это найдет сделки, даже если контакт к ним привязан криво или не привязан вовсе, но номер есть в системе
+  // 4. ГЛОБАЛЬНЫЙ ПОИСК СДЕЛОК ПО НОМЕРУ ТЕЛЕФОНА
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
@@ -254,7 +254,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
     
     if (oldLead.created_at < cutoffDate) {
-      console.log(`   ⏭️ Пропуск: сделка старше 30 дней (created_at: ${oldLead.created_at}, cutoff: ${cutoffDate}).`);
+      console.log(`   ⏭️ Пропуск: сделка старше 30 дней.`);
       continue;
     }
 
@@ -272,7 +272,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
   }
 
-  console.log("⏭️ [Проверка дубликатов] Подходящих старых сделок не найдено. Проверьте логи выше, чтобы понять причину пропуска.");
+  console.log("⏭️ [Проверка дубликатов] Подходящих старых сделок не найдено.");
   return null;
 }
 
@@ -433,20 +433,20 @@ export default {
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
 
-      // --- Смена ответственного по RULES и 🆕 ПРОВЕРКА ДУБЛЕЙ ---
+      // --- Смена ответственного по RULES и ПРОВЕРКА ДУБЛЕЙ ---
       const matchedRule = RULES.find(rule =>
         rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
         rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
       );
 
       if (matchedRule) {
-        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Запускающая логика для выхода из PNL.");
+        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Сделка вышла из ПНЛ. Запускаем проверку дублей.");
         
         if (userId && actualResponsibleId !== userId) {
           patchPayload.responsible_user_id = userId;
         }
 
-        // 🆕 ЗАПУСК ПРОВЕРКИ ДУБЛЕЙ
+        // ЗАПУСК ПРОВЕРКИ ДУБЛЕЙ (теперь для любого номера)
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
           console.log("🔄 Применение обновлений из проверки дубликатов к НОВОЙ сделке.");
