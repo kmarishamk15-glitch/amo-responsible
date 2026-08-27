@@ -406,11 +406,13 @@ export default {
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // 🆕 ОБНОВЛЕНИЕ: Статус 142 (Купил) ИЛИ 53410258
-      if (pipelineId === 5276629 && [142, 53410258].includes(newStatusId)) {
-        // Очищаем причину отказа
+      // 🆕 1. Очистка причины отказа для этапов 142 (Купил) И 53410258 (Товар забронирован)
+      if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
         customFieldsUpdates.push({ field_id: 573457, values: null });
+      }
 
+      // 🆕 2. Логика бюджета и типа запроса ТОЛЬКО для этапа 142 (Купил)
+      if (pipelineId === 5276629 && newStatusId === 142) {
         const effectiveCategory = deriveCategory(type, model, currentCategory);
         let targetRequestType = null;
         if (effectiveCategory) {
@@ -423,7 +425,7 @@ export default {
         }
 
         const promo = isPromo(leadData.name);
-        const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142/53410258]");
+        const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
         customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
