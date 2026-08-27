@@ -170,6 +170,47 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 }
 
 // ==========================================
+// 🆕 НОВАЯ ФУНКЦИЯ: ЛОГИКА ДЛЯ СТАТУСА 143 (Закрыто и не реализовано)
+// ==========================================
+function processStatus143Logic(fields) {
+  const custom_fields_values = [];
+  
+  let requestTypeId = null;
+  let rejectionReasonId = null;
+
+  for (const field of fields) {
+    if (!field.values?.length) continue;
+    if (field.field_id === 466253) requestTypeId = field.values[0].enum_id;
+    if (field.field_id === 573457) rejectionReasonId = field.values[0].enum_id;
+  }
+
+  // Правило 1: Нецелевая техника
+  if (requestTypeId === 978137) {
+    if (rejectionReasonId !== 970329 && rejectionReasonId !== 976779) {
+      console.log("🛑 [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
+      custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
+    } else {
+      console.log("✅ [Правило 143-1] Причина отказа уже корректна (нецелевой звонок или нецелевой 3 ндз), пропускаем.");
+    }
+  }
+  // Правило 2: Сущ. заказ / Гарантия техника
+  else if (requestTypeId === 931811) {
+    if (rejectionReasonId !== 970313) {
+      console.log("🛑 [Правило 143-2] Тип запроса 'сущ гарантия техника', исправляем причину отказа на 'по текущему заказу' (970313)");
+      custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970313 }] });
+    } else {
+      console.log("✅ [Правило 143-2] Причина отказа уже 'по текущему заказу', пропускаем.");
+    }
+  }
+  // Правило 3: Иное
+  else {
+    console.log("⏭️ [Правило 143-3] Тип запроса не подпадает под правила для этапа 143, ничего не делаем.");
+  }
+
+  return custom_fields_values;
+}
+
+// ==========================================
 // ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ
 // ==========================================
 async function checkDuplicatesForNewLead(leadId, env) {
@@ -349,6 +390,12 @@ export default {
           newPrice = budgetUpdates.newPrice;
         }
 
+        // 🆕 ПРОВЕРКА ДЛЯ СТАТУСА 143 ПРИ ОБНОВЛЕНИИ ПОЛЕЙ
+        if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
+          const status143Updates = processStatus143Logic(fields);
+          custom_fields_values.push(...status143Updates);
+        }
+
         if (custom_fields_values.length === 0 && newPrice == null) {
           console.log("⏭️ Обновлять нечего");
           return new Response("OK");
@@ -406,12 +453,12 @@ export default {
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // 🆕 1. Очистка причины отказа для этапов 142 (Купил) И 53410258 (Товар забронирован)
+      // 1. Очистка причины отказа для этапов 142 (Купил) И 53410258 (Товар забронирован)
       if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
         customFieldsUpdates.push({ field_id: 573457, values: null });
       }
 
-      // 🆕 2. Логика бюджета и типа запроса ТОЛЬКО для этапа 142 (Купил)
+      // 2. Логика бюджета и типа запроса ТОЛЬКО для этапа 142 (Купил)
       if (pipelineId === 5276629 && newStatusId === 142) {
         const effectiveCategory = deriveCategory(type, model, currentCategory);
         let targetRequestType = null;
@@ -428,6 +475,12 @@ export default {
         const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
         customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
+      }
+
+      // 🆕 3. Логика для этапа 143 (Закрыто и не реализовано)
+      if (pipelineId === 5276629 && newStatusId === 143) {
+        const status143Updates = processStatus143Logic(fields);
+        customFieldsUpdates.push(...status143Updates);
       }
 
       // --- Смена ответственного по RULES и ПРОВЕРКА ДУБЛЕЙ ---
