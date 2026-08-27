@@ -170,12 +170,11 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 }
 
 // ==========================================
-// ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ (РАБОТАЕТ ДЛЯ ВСЕХ НОМЕРОВ)
+// ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ
 // ==========================================
 async function checkDuplicatesForNewLead(leadId, env) {
   console.log(`🔍 [Проверка дубликатов] Начинаем с лида ${leadId}`);
 
-  // 1. Получаем данные текущей (новой) сделки и её контакты
   const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
@@ -185,7 +184,6 @@ async function checkDuplicatesForNewLead(leadId, env) {
   }
   const lead = await leadRes.json();
 
-  // 2. Извлекаем и нормализуем номер телефона
   let phone = null;
   if (lead._embedded?.contacts?.length > 0) {
     const contactId = lead._embedded.contacts[0].id;
@@ -200,11 +198,9 @@ async function checkDuplicatesForNewLead(leadId, env) {
       const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
       let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
 
-      // Умный поиск: если в стандартном поле нет, ищем по содержимому во всех полях
       if (!phoneField?.values?.length) {
         phoneField = contact.custom_fields_values?.find(f => {
           const val = f.values?.[0]?.value;
-          // Ищем любые цифры, похожие на телефон (минимум 10 цифр)
           return val && val.replace(/\D/g, '').length >= 10;
         });
       }
@@ -220,7 +216,6 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
   }
 
-  // 3. Если номер не найден, выходим
   if (!phone || phone.length < 11) {
     console.log("⏭️ [Проверка дубликатов] Корректный номер телефона не найден. Пропуск.");
     return null;
@@ -228,7 +223,6 @@ async function checkDuplicatesForNewLead(leadId, env) {
 
   console.log(`🎯 Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
 
-  // 4. ГЛОБАЛЬНЫЙ ПОИСК СДЕЛОК ПО НОМЕРУ ТЕЛЕФОНА
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
@@ -412,8 +406,9 @@ export default {
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // --- Статус 142 (Купил) ---
-      if (pipelineId === 5276629 && newStatusId === 142) {
+      // 🆕 ОБНОВЛЕНИЕ: Статус 142 (Купил) ИЛИ 53410258
+      if (pipelineId === 5276629 && [142, 53410258].includes(newStatusId)) {
+        // Очищаем причину отказа
         customFieldsUpdates.push({ field_id: 573457, values: null });
 
         const effectiveCategory = deriveCategory(type, model, currentCategory);
@@ -428,7 +423,7 @@ export default {
         }
 
         const promo = isPromo(leadData.name);
-        const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
+        const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142/53410258]");
         customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
@@ -446,7 +441,6 @@ export default {
           patchPayload.responsible_user_id = userId;
         }
 
-        // ЗАПУСК ПРОВЕРКИ ДУБЛЕЙ (теперь для любого номера)
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
           console.log("🔄 Применение обновлений из проверки дубликатов к НОВОЙ сделке.");
