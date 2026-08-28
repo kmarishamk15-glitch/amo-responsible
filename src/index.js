@@ -170,7 +170,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 }
 
 // ==========================================
-// 🆕 НОВАЯ ФУНКЦИЯ: ЛОГИКА ДЛЯ СТАТУСА 143 (Закрыто и не реализовано)
+// 🆕 ФУНКЦИЯ: ЛОГИКА ДЛЯ СТАТУСА 143 (Закрыто и не реализовано)
 // ==========================================
 function processStatus143Logic(fields) {
   const custom_fields_values = [];
@@ -186,11 +186,12 @@ function processStatus143Logic(fields) {
 
   // Правило 1: Нецелевая техника
   if (requestTypeId === 978137) {
-    if (rejectionReasonId !== 970329 && rejectionReasonId !== 976779) {
+    // 🆕 ДОБАВЛЕНО: 977497 теперь тоже считается корректным значением
+    if (rejectionReasonId !== 970329 && rejectionReasonId !== 976779 && rejectionReasonId !== 977497) {
       console.log("🛑 [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
       custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
     } else {
-      console.log("✅ [Правило 143-1] Причина отказа уже корректна (нецелевой звонок или нецелевой 3 ндз), пропускаем.");
+      console.log(`✅ [Правило 143-1] Причина отказа уже корректна (${rejectionReasonId}), пропускаем.`);
     }
   }
   // Правило 2: Сущ. заказ / Гарантия техника
