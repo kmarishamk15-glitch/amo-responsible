@@ -54,6 +54,21 @@ const FIELD_REQUEST_TYPE = 466253;
 const ALLOWED_OLD_TYPES = [931809, 938373, 957159]; // Покупка новой, Покупка БУ, Трейд-ин
 const NEW_TYPE_VALUE = 931811; // Сущ заказ / Гарантия техника
 
+// 🛡️ БЕЗОПАСНЫЙ ПАРСЕР JSON (защищает от падений при пустых ответах amoCRM)
+async function safeJsonParse(response, context = "API") {
+  try {
+    const text = await response.text();
+    if (!text || text.trim() === "") {
+      console.log(`⚠️ [${context}] Пустой ответ от API (статус: ${response.status})`);
+      return null;
+    }
+    return JSON.parse(text);
+  } catch (e) {
+    console.log(`❌ [${context}] Ошибка парсинга JSON. Статус: ${response.status}. Ответ: ${text.substring(0, 150)}...`);
+    return null;
+  }
+}
+
 function deriveCategory(type, model, currentCategory) {
   let target = currentCategory;
   if (type === 938373) target = 974781;
@@ -170,7 +185,7 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
 }
 
 // ==========================================
-// 🆕 ФУНКЦИЯ: ЛОГИКА ДЛЯ СТАТУСА 143 (Закрыто и не реализовано)
+// ФУНКЦИЯ: ЛОГИКА ДЛЯ СТАТУСА 143 (Закрыто и не реализовано)
 // ==========================================
 function processStatus143Logic(fields) {
   const custom_fields_values = [];
@@ -186,7 +201,6 @@ function processStatus143Logic(fields) {
 
   // Правило 1: Нецелевая техника
   if (requestTypeId === 978137) {
-    // 🆕 ДОБАВЛЕНО: 977497 теперь тоже считается корректным значением
     if (rejectionReasonId !== 970329 && rejectionReasonId !== 976779 && rejectionReasonId !== 977497) {
       console.log("🛑 [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
       custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
@@ -210,6 +224,7 @@ function processStatus143Logic(fields) {
 
   return custom_fields_values;
 }
+
 // ==========================================
 // ФУНКЦИЯ: ПРОВЕРКА ДУБЛЕЙ
 // ==========================================
@@ -223,7 +238,8 @@ async function checkDuplicatesForNewLead(leadId, env) {
     console.log(`❌ Не удалось получить лид ${leadId}: ${leadRes.status}`);
     return null;
   }
-  const lead = await leadRes.json();
+  const lead = await safeJsonParse(leadRes, "Получение лида (дубли)");
+  if (!lead) return null;
 
   let phone = null;
   if (lead._embedded?.contacts?.length > 0) {
@@ -235,24 +251,26 @@ async function checkDuplicatesForNewLead(leadId, env) {
     });
     
     if (contactRes.ok) {
-      const contact = await contactRes.json();
-      const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
-      let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
+      const contact = await safeJsonParse(contactRes, "Получение контакта (дубли)");
+      if (contact) {
+        const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
+        let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
 
-      if (!phoneField?.values?.length) {
-        phoneField = contact.custom_fields_values?.find(f => {
-          const val = f.values?.[0]?.value;
-          return val && val.replace(/\D/g, '').length >= 10;
-        });
-      }
-
-      if (phoneField?.values?.length) {
-        let rawPhone = phoneField.values[0].value;
-        phone = rawPhone.replace(/\D/g, '');
-        if (phone.startsWith('8') && phone.length === 11) {
-          phone = '7' + phone.slice(1);
+        if (!phoneField?.values?.length) {
+          phoneField = contact.custom_fields_values?.find(f => {
+            const val = f.values?.[0]?.value;
+            return val && val.replace(/\D/g, '').length >= 10;
+          });
         }
-        console.log(`✅ Нормализованный номер для поиска: ${phone}`);
+
+        if (phoneField?.values?.length) {
+          let rawPhone = phoneField.values[0].value;
+          phone = rawPhone.replace(/\D/g, '');
+          if (phone.startsWith('8') && phone.length === 11) {
+            phone = '7' + phone.slice(1);
+          }
+          console.log(`✅ Нормализованный номер для поиска: ${phone}`);
+        }
       }
     }
   }
@@ -273,7 +291,9 @@ async function checkDuplicatesForNewLead(leadId, env) {
     return null;
   }
 
-  const searchLeadsData = await searchLeadsRes.json();
+  const searchLeadsData = await safeJsonParse(searchLeadsRes, "Поиск сделок (дубли)");
+  if (!searchLeadsData) return null;
+
   const foundLeads = searchLeadsData._embedded?.leads || [];
   
   console.log(`🔎 Найдено сделок по фильтру (воронка ${TARGET_PIPELINE_OLD}, статус ${TARGET_STATUS_OLD}): ${foundLeads.length}`);
@@ -342,7 +362,9 @@ export default {
         });
         if (!leadRes.ok) return new Response("OK");
 
-        const lead = await leadRes.json();
+        const lead = await safeJsonParse(leadRes, "Обновление полей");
+        if (!lead) return new Response("OK");
+
         const fields = lead.custom_fields_values || [];
 
         let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
@@ -390,7 +412,7 @@ export default {
           newPrice = budgetUpdates.newPrice;
         }
 
-        // 🆕 ПРОВЕРКА ДЛЯ СТАТУСА 143 ПРИ ОБНОВЛЕНИИ ПОЛЕЙ
+        // ПРОВЕРКА ДЛЯ СТАТУСА 143 ПРИ ОБНОВЛЕНИИ ПОЛЕЙ
         if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
           const status143Updates = processStatus143Logic(fields);
           custom_fields_values.push(...status143Updates);
@@ -438,7 +460,9 @@ export default {
       });
       if (!leadDetailsRes.ok) return new Response("OK");
 
-      const leadData = await leadDetailsRes.json();
+      const leadData = await safeJsonParse(leadDetailsRes, "Смена статуса");
+      if (!leadData) return new Response("OK");
+
       const fields = leadData.custom_fields_values || [];
       const actualResponsibleId = leadData.responsible_user_id;
 
@@ -477,7 +501,7 @@ export default {
         if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
 
-      // 🆕 3. Логика для этапа 143 (Закрыто и не реализовано)
+      // 3. Логика для этапа 143 (Закрыто и не реализовано)
       if (pipelineId === 5276629 && newStatusId === 143) {
         const status143Updates = processStatus143Logic(fields);
         customFieldsUpdates.push(...status143Updates);
