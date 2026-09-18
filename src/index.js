@@ -59,7 +59,7 @@ async function safeJsonParse(response, context = "API") {
   try {
     const text = await response.text();
     if (!text || text.trim() === "") {
-      console.log(`️ [${context}] Пустой ответ от API (HTTP статус: ${response.status})`);
+      console.log(`⚠️ [${context}] Пустой ответ от API (HTTP статус: ${response.status})`);
       return null;
     }
     return JSON.parse(text);
@@ -137,7 +137,7 @@ function getCorrectionUpdate(fields, responsibleId) {
 
   const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
 
-  console.log(` Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
+  console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
 
   if (
     responsibleName &&
@@ -287,7 +287,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
   if (!searchLeadsData) return null;
 
   const foundLeads = searchLeadsData._embedded?.leads || [];
-  console.log(` Найдено сделок по фильтру: ${foundLeads.length}`);
+  console.log(`🔎 Найдено сделок по фильтру: ${foundLeads.length}`);
 
   const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
 
@@ -300,13 +300,13 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
     
     if (oldLead.created_at < cutoffDate) {
-      console.log(`   ️ Пропуск: сделка старше 30 дней.`);
+      console.log(`   ⏭️ Пропуск: сделка старше 30 дней.`);
       continue;
     }
 
     const reqTypeField = oldLead.custom_fields_values?.find(f => f.field_id === FIELD_REQUEST_TYPE);
     const currentType = reqTypeField?.values?.[0]?.enum_id;
-    console.log(`   ️ Тип запроса в старой сделке: ${currentType}`);
+    console.log(`   ℹ️ Тип запроса в старой сделке: ${currentType}`);
 
     if (ALLOWED_OLD_TYPES.includes(currentType)) {
       console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id}. Меняем тип в НОВОЙ сделке на Сущ (931811).`);
@@ -393,11 +393,17 @@ export default {
         if (correctionUpdate) custom_fields_values.push(correctionUpdate);
 
         let newPrice = null;
+        
+        // 🆕 ПРОВЕРКА НА ИСКЛЮЧЕНИЕ ПРИ ОБНОВЛЕНИИ
         if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
-          const promo = isPromo(lead.name);
-          const budgetUpdates = getBudgetUpdates(lead, fields, promo, "[UPDATE]");
-          custom_fields_values.push(...budgetUpdates.custom_fields_values);
-          newPrice = budgetUpdates.newPrice;
+          if (lead.name && lead.name.toLowerCase().includes("исключение")) {
+            console.log("⏭️ [UPDATE] Найдено слово 'исключение' в названии. Маржа/бюджет не меняется.");
+          } else {
+            const promo = isPromo(lead.name);
+            const budgetUpdates = getBudgetUpdates(lead, fields, promo, "[UPDATE]");
+            custom_fields_values.push(...budgetUpdates.custom_fields_values);
+            newPrice = budgetUpdates.newPrice;
+          }
         }
 
         if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
@@ -474,21 +480,26 @@ export default {
 
       // 2. Логика бюджета и типа запроса ТОЛЬКО для этапа 142
       if (pipelineId === 5276629 && newStatusId === 142) {
-        const effectiveCategory = deriveCategory(type, model, currentCategory);
-        let targetRequestType = null;
-        if (effectiveCategory) {
-          if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
-          else if (effectiveCategory === 974781) targetRequestType = 938373;
-          else if (effectiveCategory === 974783) targetRequestType = 957159;
-        }
-        if (targetRequestType) {
-          customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
-        }
+        // 🆕 ПРОВЕРКА НА ИСКЛЮЧЕНИЕ ПРИ СМЕНЕ СТАТУСА
+        if (leadData.name && leadData.name.toLowerCase().includes("исключение")) {
+          console.log("⏭️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
+        } else {
+          const effectiveCategory = deriveCategory(type, model, currentCategory);
+          let targetRequestType = null;
+          if (effectiveCategory) {
+            if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
+            else if (effectiveCategory === 974781) targetRequestType = 938373;
+            else if (effectiveCategory === 974783) targetRequestType = 957159;
+          }
+          if (targetRequestType) {
+            customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
+          }
 
-        const promo = isPromo(leadData.name);
-        const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
-        customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
-        if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
+          const promo = isPromo(leadData.name);
+          const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
+          customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
+          if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
+        }
       }
 
       // 3. Логика для этапа 143
