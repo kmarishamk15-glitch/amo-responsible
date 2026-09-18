@@ -59,7 +59,7 @@ async function safeJsonParse(response, context = "API") {
   try {
     const text = await response.text();
     if (!text || text.trim() === "") {
-      console.log(`⚠️ [${context}] Пустой ответ от API (HTTP статус: ${response.status})`);
+      console.log(`️ [${context}] Пустой ответ от API (HTTP статус: ${response.status})`);
       return null;
     }
     return JSON.parse(text);
@@ -137,7 +137,7 @@ function getCorrectionUpdate(fields, responsibleId) {
 
   const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
 
-  console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
+  console.log(` Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
 
   if (
     responsibleName &&
@@ -216,8 +216,9 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
+// 🔍 ФУНКЦИЯ ПРОВЕРКИ ДУБЛЕЙ (СМЕНА НА "СУЩ")
 async function checkDuplicatesForNewLead(leadId, env) {
-  console.log(`🔍 [Проверка дубликатов] Начинаем с лида ${leadId}`);
+  console.log(`🔍 [Проверка дубликатов/Сущ] Начинаем с лида ${leadId}`);
 
   const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -286,7 +287,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
   if (!searchLeadsData) return null;
 
   const foundLeads = searchLeadsData._embedded?.leads || [];
-  console.log(`🔎 Найдено сделок по фильтру: ${foundLeads.length}`);
+  console.log(` Найдено сделок по фильтру: ${foundLeads.length}`);
 
   const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
 
@@ -299,16 +300,16 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
     
     if (oldLead.created_at < cutoffDate) {
-      console.log(`   ⏭️ Пропуск: сделка старше 30 дней.`);
+      console.log(`   ️ Пропуск: сделка старше 30 дней.`);
       continue;
     }
 
     const reqTypeField = oldLead.custom_fields_values?.find(f => f.field_id === FIELD_REQUEST_TYPE);
     const currentType = reqTypeField?.values?.[0]?.enum_id;
-    console.log(`   ℹ️ Тип запроса в старой сделке: ${currentType}`);
+    console.log(`   ️ Тип запроса в старой сделке: ${currentType}`);
 
     if (ALLOWED_OLD_TYPES.includes(currentType)) {
-      console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id}. Будем обновлять НОВУЮ сделку.`);
+      console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id}. Меняем тип в НОВОЙ сделке на Сущ (931811).`);
       return {
         custom_fields_values: [{ field_id: FIELD_REQUEST_TYPE, values: [{ enum_id: NEW_TYPE_VALUE }] }]
       };
@@ -343,7 +344,7 @@ export default {
       // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
       // =========================
       if (params.has("leads[update][0][id]")) {
-        console.log("📦 ОБНОВЛЕНИЕ СОБЫТИЯ");
+        console.log("📦 ОБНОВЛЕНИЕ СОБЫТИЯ (Поля изменены)");
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -436,13 +437,11 @@ export default {
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
       const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
       
-      // 🆕 УЛУЧШЕННЫЙ ПОИСК ID ПОЛЬЗОВАТЕЛЯ (проверяем все возможные поля вебхука)
       const modifiedUserId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
       const webhookResponsibleId = Number(params.get("leads[status][0][responsible_user_id]"));
-      const userId = modifiedUserId || webhookResponsibleId; // Приоритет: кто изменил, иначе кто указан в вебхуке
+      const userId = modifiedUserId || webhookResponsibleId;
 
       console.log("Ведущий:", leadId, "|", oldPipelineId, oldStatusId, "→", pipelineId, newStatusId);
-      console.log(`👤 ОТЛАДКА ID: modified_user_id=${modifiedUserId}, webhook_responsible=${webhookResponsibleId}. ИТОГОВЫЙ userId=${userId}`);
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
 
@@ -498,16 +497,18 @@ export default {
         customFieldsUpdates.push(...status143Updates);
       }
 
-      // --- Смена ответственного по RULES и ПРОВЕРКА ДУБЛЕЙ ---
+      // ==========================================
+      // 🔒 ПРОВЕРКА ДУБЛЕЙ (СМЕНА НА "СУЩ") И СМЕНА ОТВЕТСТВЕННОГО
+      // ЗАПУСКАЕТСЯ ТОЛЬКО ПРИ ВЫХОДЕ ИЗ ПНЛ! НИКОГДА БОЛЬШЕ!
+      // ==========================================
       const matchedRule = RULES.find(rule =>
         rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
         rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
       );
 
       if (matchedRule) {
-        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Сделка вышла из ПНЛ.");
+        console.log("✅ ПРАВИЛО СОБЛЮДЕНО! Сделка вышла из ПНЛ. Запускаем смену ответственного и проверку на Сущ.");
         
-        // 🆕 ЯВНАЯ ПРОВЕРКА И ЛОГИРОВАНИЕ СМЕНЫ ОТВЕТСТВЕННОГО
         if (userId && actualResponsibleId !== userId) {
           console.log(`🔄 СМЕНА ОТВЕТСТВЕННОГО: Было ${actualResponsibleId} → Станет ${userId}`);
           patchPayload.responsible_user_id = userId;
@@ -515,11 +516,14 @@ export default {
           console.log(`⏭️ Ответственный не меняется (userId=${userId}, actual=${actualResponsibleId})`);
         }
 
+        // 🔍 ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЗАПУСКАЕТСЯ ПРОВЕРКА НА СУЩ!
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
-          console.log("🔄 Применение обновлений из проверки дубликатов к НОВОЙ сделке.");
+          console.log("🔄 Применение обновлений из проверки дубликатов (Сущ) к НОВОЙ сделке.");
           customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
         }
+      } else {
+        console.log("⏭️ Сделка НЕ вышла из ПНЛ. Проверка на Сущ и смена ответственного ПРОПУЩЕНЫ.");
       }
 
       // --- Обновление даты ---
@@ -537,7 +541,7 @@ export default {
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
-        console.log("🚀 Отправка СБОРНОГО ПАТЧА для лида:", leadId, "Payload:", JSON.stringify(patchPayload));
+        console.log("🚀 Отправка СБОРНОГО ПАТЧА для лида:", leadId);
         
         const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
