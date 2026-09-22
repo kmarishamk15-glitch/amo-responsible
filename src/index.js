@@ -13,9 +13,10 @@ const RESPONSIBLE_USER_NAMES = {
   8789956: "Даниил Бровкин", 8517166: "Михаил Кострюков", 12669626: "Александра Абрамова",
   12280618: "Анна Зернова", 13116242: "Максим Булыков", 13192790: "Мария Смирнова",
   13284018: "Марк Артыков", 13465774: "Илья Буланов", 13249770: "Павел Николаев",
-  13347810: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
+  13349558: "Светлана Маливанова", // 🆕 ИСПРАВЛЕННЫЙ ID
+  13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
   14030758: "Александра Наумова", 14075570: "Ярослава Демина",
-  14212262: "Александра Потехина" // 🆕 Новый сотрудник
+  14212262: "Александра Потехина"
 };
 
 const CORRECTION_FIELD_NAMES = {
@@ -24,7 +25,7 @@ const CORRECTION_FIELD_NAMES = {
   983513: "Павел Николаев", 983515: "Светлана Маливанова", 983517: "Артем Сяднев",
   983519: "Ирина Яровицина", 983521: "Александра Наумова", 983523: "Ярослава Демина",
   983525: "Даниил Бровкин", 983527: "Михаил Кострюков",
-  983923: "Александра Потехина" // 🆕 Новый сотрудник
+  983923: "Александра Потехина"
 };
 
 // ===== БЮДЖЕТ =====
@@ -125,7 +126,6 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
   return { budget, forceNoDiscount };
 }
 
-// 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ ПРОВЕРКИ КОРРЕКТИРОВКИ
 function getCorrectionUpdate(fields, responsibleId) {
   let currentCorrectionId = null;
   let currentCorrectionName = null;
@@ -141,7 +141,7 @@ function getCorrectionUpdate(fields, responsibleId) {
 
   console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
 
-  // 🆕 УЛУЧШЕННОЕ СРАВНЕНИЕ: убираем пробелы и приводим к нижнему регистру
+  // Сравниваем имена, игнорируя регистр и лишние пробелы
   if (
     responsibleName &&
     currentCorrectionName &&
@@ -269,11 +269,11 @@ async function checkDuplicatesForNewLead(leadId, env) {
   }
 
   if (!phone || phone.length !== 11) {
-    console.log("️ [Проверка дубликатов] Корректный номер телефона (11 цифр) не найден. Пропуск.");
+    console.log("⏭️ [Проверка дубликатов] Корректный номер телефона (11 цифр) не найден. Пропуск.");
     return null;
   }
 
-  console.log(` Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
+  console.log(`🎯 Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
 
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -326,7 +326,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
 export default {
   async fetch(request, env, ctx) {
     console.log("======================");
-    console.log(" ЗАПУСК РАБОЧЕГО ПРОЦЕССА |", request.method);
+    console.log("🔥 ЗАПУСК РАБОЧЕГО ПРОЦЕССА |", request.method);
     console.log("======================");
 
     if (request.method === "GET") return new Response("Webhook works");
@@ -435,7 +435,7 @@ export default {
         return new Response("OK");
       }
 
-      console.log(" Тип события: ИЗМЕНЕНИЕ СТАТУСА");
+      console.log("📋 Тип события: ИЗМЕНЕНИЕ СТАТУСА");
 
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
@@ -479,7 +479,7 @@ export default {
 
       if (pipelineId === 5276629 && newStatusId === 142) {
         if (leadData.name && leadData.name.toLowerCase().includes("исключение")) {
-          console.log("️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
+          console.log("⏭️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
         } else {
           const effectiveCategory = deriveCategory(type, model, currentCategory);
           let targetRequestType = null;
@@ -521,11 +521,11 @@ export default {
 
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
-          console.log(" Применение обновлений из проверки дубликатов (Сущ) к НОВОЙ сделке.");
+          console.log("🔄 Применение обновлений из проверки дубликатов (Сущ) к НОВОЙ сделке.");
           customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
         }
       } else {
-        console.log("️ Сделка НЕ вышла из ПНЛ. Проверка на Сущ и смена ответственного ПРОПУЩЕНЫ.");
+        console.log("⏭️ Сделка НЕ вышла из ПНЛ. Проверка на Сущ и смена ответственного ПРОПУЩЕНЫ.");
       }
 
       if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 &&
