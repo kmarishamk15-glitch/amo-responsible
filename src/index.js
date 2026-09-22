@@ -62,7 +62,7 @@ const PAYMENT_METHOD_MAP = {
   'наличн': 973115,
   'карт': 977839,
   'кредит': 973117,
-  'рассрочк': 975917,
+  'рассрочк': 973117,
   'долям': 977071
 };
 
@@ -70,7 +70,7 @@ async function safeJsonParse(response, context = "API") {
   try {
     const text = await response.text();
     if (!text || text.trim() === "") {
-      console.log(`️ [${context}] Пустой ответ от API (HTTP статус: ${response.status})`);
+      console.log(`⚠️ [${context}] Пустой ответ от API (HTTP статус: ${response.status})`);
       return null;
     }
     return JSON.parse(text);
@@ -137,7 +137,7 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
 
 // 🆕 ФУНКЦИЯ: ЧТЕНИЕ СПОСОБА ОПЛАТЫ ИЗ ПОСЛЕДНЕГО ПРИМЕЧАНИЯ
 async function getPaymentMethodFromLastNote(leadId, env) {
-  console.log(`💬 [Способ оплаты] Читаем последнее примечание для лида ${leadId}`);
+  console.log(` [Способ оплаты] Читаем последнее примечание для лида ${leadId}`);
 
   const notesRes = await fetch(
     `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?sort_by=-created_at&limit=1`,
@@ -145,7 +145,7 @@ async function getPaymentMethodFromLastNote(leadId, env) {
   );
 
   if (!notesRes.ok) {
-    console.log(`️ [Способ оплаты] Не удалось получить примечания: ${notesRes.status}`);
+    console.log(`⚠️ [Способ оплаты] Не удалось получить примечания: ${notesRes.status}`);
     return null;
   }
 
@@ -154,7 +154,7 @@ async function getPaymentMethodFromLastNote(leadId, env) {
 
   const notes = notesData._embedded?.notes || [];
   if (notes.length === 0) {
-    console.log("️ [Способ оплаты] Примечания не найдены.");
+    console.log("⏭️ [Способ оплаты] Примечания не найдены.");
     return null;
   }
 
@@ -165,7 +165,7 @@ async function getPaymentMethodFromLastNote(leadId, env) {
     return null;
   }
 
-  console.log(`📝 [Способ оплаты] Последнее примечание (первые 100 символов): ${noteText.substring(0, 100)}...`);
+  console.log(`📝 [Способ оплаты] Последнее примечание (первые 150 символов): ${noteText.substring(0, 150)}...`);
 
   // Ищем строку "Способ оплаты: [слово]"
   const match = noteText.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
@@ -177,7 +177,7 @@ async function getPaymentMethodFromLastNote(leadId, env) {
   const rawWord = match[1].toLowerCase();
   console.log(`🔍 [Способ оплаты] Найдено слово: "${rawWord}"`);
 
-  // Сопоставление по вхождению (например, "наличные" содержит "наличн")
+  // Сопоставление по вхождению
   for (const [key, enumId] of Object.entries(PAYMENT_METHOD_MAP)) {
     if (rawWord.includes(key)) {
       console.log(`✅ [Способ оплаты] Сопоставлено с "${key}" → enum_id ${enumId}`);
@@ -185,7 +185,7 @@ async function getPaymentMethodFromLastNote(leadId, env) {
     }
   }
 
-  console.log(`️ [Способ оплаты] Слово "${rawWord}" не сопоставлено ни с одним вариантом.`);
+  console.log(`⏭️ [Способ оплаты] Слово "${rawWord}" не сопоставлено ни с одним вариантом.`);
   return null;
 }
 
@@ -237,12 +237,12 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix}  iPhone: принудительная установка скидки 'Без скидки'`);
+    console.log(`${logPrefix} 🧾 iPhone: принудительная установка скидки 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
   if (budget != null && lead.price !== budget) {
-    console.log(`${logPrefix}  Установка бюджета: ${lead.price} → ${budget}${promo ? " (x2 акция)" : ""}`);
+    console.log(`${logPrefix} 💰 Установка бюджета: ${lead.price} → ${budget}${promo ? " (x2 акция)" : ""}`);
     newPrice = budget;
   }
 
@@ -262,7 +262,7 @@ function processStatus143Logic(fields) {
 
   if (requestTypeId === 978137) {
     if (rejectionReasonId !== 970329 && rejectionReasonId !== 976779 && rejectionReasonId !== 977497) {
-      console.log(" [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
+      console.log("🛑 [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
       custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
     } else {
       console.log(`✅ [Правило 143-1] Причина отказа уже корректна (${rejectionReasonId}), пропускаем.`);
@@ -288,7 +288,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
   if (!leadRes.ok) {
-    console.log(` Не удалось получить лид ${leadId}: ${leadRes.status}`);
+    console.log(`❌ Не удалось получить лид ${leadId}: ${leadRes.status}`);
     return null;
   }
   const lead = await safeJsonParse(leadRes, "Получение лида (дубли)");
@@ -335,7 +335,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     return null;
   }
 
-  console.log(`🎯 Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
+  console.log(` Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
 
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -350,7 +350,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
   if (!searchLeadsData) return null;
 
   const foundLeads = searchLeadsData._embedded?.leads || [];
-  console.log(` Найдено сделок по фильтру: ${foundLeads.length}`);
+  console.log(`🔎 Найдено сделок по фильтру: ${foundLeads.length}`);
 
   const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
 
@@ -363,13 +363,13 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
     
     if (oldLead.created_at < cutoffDate) {
-      console.log(`   ️ Пропуск: сделка старше 30 дней.`);
+      console.log(`   ⏭️ Пропуск: сделка старше 30 дней.`);
       continue;
     }
 
     const reqTypeField = oldLead.custom_fields_values?.find(f => f.field_id === FIELD_REQUEST_TYPE);
     const currentType = reqTypeField?.values?.[0]?.enum_id;
-    console.log(`   ️ Тип запроса в старой сделке: ${currentType}`);
+    console.log(`   ℹ️ Тип запроса в старой сделке: ${currentType}`);
 
     if (ALLOWED_OLD_TYPES.includes(currentType)) {
       console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id}. Меняем тип в НОВОЙ сделке на Сущ (931811).`);
@@ -466,13 +466,6 @@ export default {
             custom_fields_values.push(...budgetUpdates.custom_fields_values);
             newPrice = budgetUpdates.newPrice;
           }
-
-          // 🆕 ЧТЕНИЕ СПОСОБА ОПЛАТЫ ИЗ ПОСЛЕДНЕГО ПРИМЕЧАНИЯ
-          const paymentMethodUpdate = await getPaymentMethodFromLastNote(leadId, env);
-          if (paymentMethodUpdate) {
-            console.log("💳 [UPDATE] Применяем способ оплаты из примечания.");
-            custom_fields_values.push(paymentMethodUpdate);
-          }
         }
 
         if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
@@ -480,8 +473,15 @@ export default {
           custom_fields_values.push(...status143Updates);
         }
 
+        // 🆕 ЧТЕНИЕ СПОСОБА ОПЛАТЫ ИЗ ПОСЛЕДНЕГО ПРИМЕЧАНИЯ (ПРИ ЛЮБОМ ОБНОВЛЕНИИ ПОЛЕЙ)
+        const paymentMethodUpdate = await getPaymentMethodFromLastNote(leadId, env);
+        if (paymentMethodUpdate) {
+          console.log("💳 [UPDATE] Применяем способ оплаты из примечания.");
+          custom_fields_values.push(paymentMethodUpdate);
+        }
+
         if (custom_fields_values.length === 0 && newPrice == null) {
-          console.log("⏭️ Обновлять нечего");
+          console.log("️ Обновлять нечего");
           return new Response("OK");
         }
 
@@ -616,7 +616,7 @@ export default {
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
-        console.log(" Отправка СБОРНОГО ПАТЧА для лида:", leadId);
+        console.log("🚀 Отправка СБОРНОГО ПАТЧА для лида:", leadId);
         
         const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
