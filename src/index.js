@@ -75,7 +75,7 @@ async function safeJsonParse(response, context = "API") {
     }
     return JSON.parse(text);
   } catch (e) {
-    console.log(`❌ [${context}] Ошибка парсинга JSON. Статус: ${response.status}. Ответ: ${String(text).substring(0, 150)}...`);
+    console.log(` [${context}] Ошибка парсинга JSON. Статус: ${response.status}. Ответ: ${String(text).substring(0, 150)}...`);
     return null;
   }
 }
@@ -135,17 +135,21 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
   return { budget, forceNoDiscount };
 }
 
-// 🆕 ФУНКЦИЯ: ЧТЕНИЕ СПОСОБА ОПЛАТЫ ИЗ ПОСЛЕДНЕГО ПРИМЕЧАНИЯ
-async function getPaymentMethodFromLastNote(leadId, env) {
-  console.log(` [Способ оплаты] Читаем последнее примечание для лида ${leadId}`);
+//  ФУНКЦИЯ: ОПРЕДЕЛЕНИЕ СПОСОБА ОПЛАТЫ С ПРИОРИТЕТОМ "ИСКЛЮЧЕНИЕ"
+// Логика:
+// 1. Сначала ищем во ВСЕХ примечаниях фразу "исключение [слово]" — это ручной override менеджера
+// 2. Если не нашли — берём последнее примечание и ищем "Способ оплаты: [слово]" (автоматика от ИИ)
+async function getPaymentMethodFromNotes(leadId, env) {
+  console.log(`💬 [Способ оплаты] === НАЧИНАЕМ ПРОВЕРКУ ДЛЯ ЛИДА ${leadId} ===`);
 
+  // Получаем последние 10 примечаний (чтобы найти "исключение" даже не в самом свежем)
   const notesRes = await fetch(
-    `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?sort_by=-created_at&limit=1`,
+    `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?sort_by=-created_at&limit=10`,
     { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
   );
 
   if (!notesRes.ok) {
-    console.log(`⚠️ [Способ оплаты] Не удалось получить примечания: ${notesRes.status}`);
+    console.log(`️ [Способ оплаты] Не удалось получить примечания: ${notesRes.status}`);
     return null;
   }
 
@@ -153,34 +157,60 @@ async function getPaymentMethodFromLastNote(leadId, env) {
   if (!notesData) return null;
 
   const notes = notesData._embedded?.notes || [];
+  console.log(` [Способ оплаты] Получено примечаний: ${notes.length}`);
+
   if (notes.length === 0) {
     console.log("⏭️ [Способ оплаты] Примечания не найдены.");
     return null;
   }
 
+  // ШАГ 1: Ищем во ВСЕХ примечаниях фразу "исключение [слово]"
+  // Это ручной override менеджера — имеет ПРИОРИТЕТ
+  for (let i = 0; i < notes.length; i++) {
+    const note = notes[i];
+    const noteText = note?.params?.text || "";
+    if (!noteText) continue;
+
+    // Ищем "исключение наличные", "исключение карта", "исключение кредит" и т.д.
+    const exceptionMatch = noteText.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
+    
+    if (exceptionMatch && exceptionMatch[1]) {
+      const rawWord = exceptionMatch[1].toLowerCase();
+      console.log(`🚨 [Способ оплаты] НАЙДЕНО ИСКЛЮЧЕНИЕ в примечании #${i + 1} (ID: ${note.id}): "исключение ${rawWord}"`);
+
+      for (const [key, enumId] of Object.entries(PAYMENT_METHOD_MAP)) {
+        if (rawWord.includes(key)) {
+          console.log(`✅ [Способ оплаты] ИСКЛЮЧЕНИЕ: применяем "${key}" → enum_id ${enumId}`);
+          return { field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] };
+        }
+      }
+    }
+  }
+
+  console.log("ℹ️ [Способ оплаты] Фраза 'исключение' не найдена ни в одном примечании. Переходим к автоматике ИИ.");
+
+  // ШАГ 2: Если "исключение" не найдено — берём ПОСЛЕДНЕЕ примечание и ищем "Способ оплаты: [слово]"
   const lastNote = notes[0];
   const noteText = lastNote?.params?.text || "";
   if (!noteText) {
-    console.log("⏭️ [Способ оплаты] Последнее примечание пустое.");
+    console.log("️ [Способ оплаты] Последнее примечание пустое.");
     return null;
   }
 
   console.log(`📝 [Способ оплаты] Последнее примечание (первые 150 символов): ${noteText.substring(0, 150)}...`);
 
-  // Ищем строку "Способ оплаты: [слово]"
   const match = noteText.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
   if (!match || !match[1]) {
-    console.log("⏭️ [Способ оплаты] Строка 'Способ оплаты:' не найдена в примечании.");
+    console.log("⏭️ [Способ оплаты] Строка 'Способ оплаты:' не найдена в последнем примечании.");
     return null;
   }
 
   const rawWord = match[1].toLowerCase();
   console.log(`🔍 [Способ оплаты] Найдено слово: "${rawWord}"`);
 
-  // Сопоставление по вхождению
   for (const [key, enumId] of Object.entries(PAYMENT_METHOD_MAP)) {
     if (rawWord.includes(key)) {
-      console.log(`✅ [Способ оплаты] Сопоставлено с "${key}" → enum_id ${enumId}`);
+      console.log(`✅ [Способ оплаты] Автоматика ИИ: "${key}" → enum_id ${enumId}`);
       return { field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] };
     }
   }
@@ -237,12 +267,12 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
 
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
-    console.log(`${logPrefix} 🧾 iPhone: принудительная установка скидки 'Без скидки'`);
+    console.log(`${logPrefix}  iPhone: принудительная установка скидки 'Без скидки'`);
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
 
   if (budget != null && lead.price !== budget) {
-    console.log(`${logPrefix} 💰 Установка бюджета: ${lead.price} → ${budget}${promo ? " (x2 акция)" : ""}`);
+    console.log(`${logPrefix}  Установка бюджета: ${lead.price} → ${budget}${promo ? " (x2 акция)" : ""}`);
     newPrice = budget;
   }
 
@@ -262,7 +292,7 @@ function processStatus143Logic(fields) {
 
   if (requestTypeId === 978137) {
     if (rejectionReasonId !== 970329 && rejectionReasonId !== 976779 && rejectionReasonId !== 977497) {
-      console.log("🛑 [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
+      console.log(" [Правило 143-1] Тип запроса 'нецелевой техника', исправляем причину отказа на 'нецелевой звонок' (970329)");
       custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
     } else {
       console.log(`✅ [Правило 143-1] Причина отказа уже корректна (${rejectionReasonId}), пропускаем.`);
@@ -288,7 +318,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
   });
   if (!leadRes.ok) {
-    console.log(`❌ Не удалось получить лид ${leadId}: ${leadRes.status}`);
+    console.log(` Не удалось получить лид ${leadId}: ${leadRes.status}`);
     return null;
   }
   const lead = await safeJsonParse(leadRes, "Получение лида (дубли)");
@@ -335,7 +365,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
     return null;
   }
 
-  console.log(` Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
+  console.log(`🎯 Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
 
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -350,7 +380,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
   if (!searchLeadsData) return null;
 
   const foundLeads = searchLeadsData._embedded?.leads || [];
-  console.log(`🔎 Найдено сделок по фильтру: ${foundLeads.length}`);
+  console.log(` Найдено сделок по фильтру: ${foundLeads.length}`);
 
   const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
 
@@ -363,13 +393,13 @@ async function checkDuplicatesForNewLead(leadId, env) {
     }
     
     if (oldLead.created_at < cutoffDate) {
-      console.log(`   ⏭️ Пропуск: сделка старше 30 дней.`);
+      console.log(`   ️ Пропуск: сделка старше 30 дней.`);
       continue;
     }
 
     const reqTypeField = oldLead.custom_fields_values?.find(f => f.field_id === FIELD_REQUEST_TYPE);
     const currentType = reqTypeField?.values?.[0]?.enum_id;
-    console.log(`   ℹ️ Тип запроса в старой сделке: ${currentType}`);
+    console.log(`   ️ Тип запроса в старой сделке: ${currentType}`);
 
     if (ALLOWED_OLD_TYPES.includes(currentType)) {
       console.log(`✅ [УСПЕХ] Найдена старая сделка ${oldLead.id}. Меняем тип в НОВОЙ сделке на Сущ (931811).`);
@@ -473,15 +503,15 @@ export default {
           custom_fields_values.push(...status143Updates);
         }
 
-        // 🆕 ЧТЕНИЕ СПОСОБА ОПЛАТЫ ИЗ ПОСЛЕДНЕГО ПРИМЕЧАНИЯ (ПРИ ЛЮБОМ ОБНОВЛЕНИИ ПОЛЕЙ)
-        const paymentMethodUpdate = await getPaymentMethodFromLastNote(leadId, env);
+        // 🆕 ЧТЕНИЕ СПОСОБА ОПЛАТЫ С ПРИОРИТЕТОМ "ИСКЛЮЧЕНИЕ" (ПРИ ЛЮБОМ ОБНОВЛЕНИИ ПОЛЕЙ)
+        const paymentMethodUpdate = await getPaymentMethodFromNotes(leadId, env);
         if (paymentMethodUpdate) {
-          console.log("💳 [UPDATE] Применяем способ оплаты из примечания.");
+          console.log("💳 [UPDATE] Применяем способ оплаты из примечаний.");
           custom_fields_values.push(paymentMethodUpdate);
         }
 
         if (custom_fields_values.length === 0 && newPrice == null) {
-          console.log("️ Обновлять нечего");
+          console.log("⏭️ Обновлять нечего");
           return new Response("OK");
         }
 
@@ -548,7 +578,7 @@ export default {
 
       if (pipelineId === 5276629 && newStatusId === 142) {
         if (leadData.name && leadData.name.toLowerCase().includes("исключение")) {
-          console.log("⏭️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
+          console.log("️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
         } else {
           const effectiveCategory = deriveCategory(type, model, currentCategory);
           let targetRequestType = null;
@@ -567,10 +597,10 @@ export default {
           if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
         }
 
-        // 🆕 ЧТЕНИЕ СПОСОБА ОПЛАТЫ ИЗ ПОСЛЕДНЕГО ПРИМЕЧАНИЯ ПРИ ПЕРЕХОДЕ В "КУПИЛ"
-        const paymentMethodUpdate = await getPaymentMethodFromLastNote(leadId, env);
+        // 🆕 ЧТЕНИЕ СПОСОБА ОПЛАТЫ С ПРИОРИТЕТОМ "ИСКЛЮЧЕНИЕ" ПРИ ПЕРЕХОДЕ В "КУПИЛ"
+        const paymentMethodUpdate = await getPaymentMethodFromNotes(leadId, env);
         if (paymentMethodUpdate) {
-          console.log("💳 [STATUS 142] Применяем способ оплаты из примечания.");
+          console.log("💳 [STATUS 142] Применяем способ оплаты из примечаний.");
           customFieldsUpdates.push(paymentMethodUpdate);
         }
       }
@@ -630,13 +660,13 @@ export default {
         }
         console.log("✅ СБОРНЫЙ ПАТЧ УСТАНОВЛЕН УСПЕШНО");
       } else {
-        console.log("⏭️ Ничего не нужно обновлять (нет изменений в payload)");
+        console.log("️ Ничего не нужно обновлять (нет изменений в payload)");
       }
 
       return new Response("OK");
 
     } catch (e) {
-      console.log(" CRASH:", e.stack || e.message);
+      console.log("💥 CRASH:", e.stack || e.message);
       return new Response("ERROR", { status: 500 });
     }
   }
