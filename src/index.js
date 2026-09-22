@@ -14,7 +14,8 @@ const RESPONSIBLE_USER_NAMES = {
   12280618: "Анна Зернова", 13116242: "Максим Булыков", 13192790: "Мария Смирнова",
   13284018: "Марк Артыков", 13465774: "Илья Буланов", 13249770: "Павел Николаев",
   13347810: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
-  14030758: "Александра Наумова", 14075570: "Ярослава Демина"
+  14030758: "Александра Наумова", 14075570: "Ярослава Демина",
+  14212262: "Александра Потехина" // 🆕 Новый сотрудник
 };
 
 const CORRECTION_FIELD_NAMES = {
@@ -22,7 +23,8 @@ const CORRECTION_FIELD_NAMES = {
   983507: "Мария Смирнова", 983509: "Марк Артыков", 983511: "Илья Буланов",
   983513: "Павел Николаев", 983515: "Светлана Маливанова", 983517: "Артем Сяднев",
   983519: "Ирина Яровицина", 983521: "Александра Наумова", 983523: "Ярослава Демина",
-  983525: "Даниил Бровкин", 983527: "Михаил Кострюков"
+  983525: "Даниил Бровкин", 983527: "Михаил Кострюков",
+  983923: "Александра Потехина" // 🆕 Новый сотрудник
 };
 
 // ===== БЮДЖЕТ =====
@@ -51,10 +53,9 @@ const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
 const TARGET_PIPELINE_OLD = 5276629;
 const TARGET_STATUS_OLD = 143;
 const FIELD_REQUEST_TYPE = 466253;
-const ALLOWED_OLD_TYPES = [931809, 938373, 957159]; // Покупка новой, Покупка БУ, Трейд-ин
-const NEW_TYPE_VALUE = 931811; // Сущ заказ / Гарантия техника
+const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
+const NEW_TYPE_VALUE = 931811;
 
-// 🛡️ АБСОЛЮТНО БЕЗОПАСНЫЙ ПАРСЕР JSON
 async function safeJsonParse(response, context = "API") {
   try {
     const text = await response.text();
@@ -124,6 +125,7 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
   return { budget, forceNoDiscount };
 }
 
+// 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ ПРОВЕРКИ КОРРЕКТИРОВКИ
 function getCorrectionUpdate(fields, responsibleId) {
   let currentCorrectionId = null;
   let currentCorrectionName = null;
@@ -139,13 +141,14 @@ function getCorrectionUpdate(fields, responsibleId) {
 
   console.log(`🔍 Проверка исправления: ответственный = ${responsibleName || responsibleId}, исправление = ${currentCorrectionName || currentCorrectionId || "пустое"}`);
 
+  // 🆕 УЛУЧШЕННОЕ СРАВНЕНИЕ: убираем пробелы и приводим к нижнему регистру
   if (
     responsibleName &&
     currentCorrectionName &&
-    currentCorrectionName === responsibleName &&
+    responsibleName.trim().toLowerCase() === currentCorrectionName.trim().toLowerCase() &&
     currentCorrectionId !== 983499
   ) {
-    console.log("✅ Имена совпадают → установка 'Не требуется' (983499)");
+    console.log(`✅ Имена совпадают (${responsibleName}) → установка 'Не требуется' (983499)`);
     return { field_id: 582983, values: [{ enum_id: 983499 }] };
   }
 
@@ -216,7 +219,6 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
-// 🔍 ФУНКЦИЯ ПРОВЕРКИ ДУБЛЕЙ (СМЕНА НА "СУЩ")
 async function checkDuplicatesForNewLead(leadId, env) {
   console.log(`🔍 [Проверка дубликатов/Сущ] Начинаем с лида ${leadId}`);
 
@@ -245,7 +247,6 @@ async function checkDuplicatesForNewLead(leadId, env) {
         const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
         let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
 
-        // 🛡️ СТРОГАЯ ПРОВЕРКА: только 11 цифр, начинается с 7 или 8
         if (!phoneField?.values?.length) {
           phoneField = contact.custom_fields_values?.find(f => {
             const val = f.values?.[0]?.value;
@@ -268,11 +269,11 @@ async function checkDuplicatesForNewLead(leadId, env) {
   }
 
   if (!phone || phone.length !== 11) {
-    console.log("⏭️ [Проверка дубликатов] Корректный номер телефона (11 цифр) не найден. Пропуск.");
+    console.log("️ [Проверка дубликатов] Корректный номер телефона (11 цифр) не найден. Пропуск.");
     return null;
   }
 
-  console.log(`🎯 Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
+  console.log(` Номер найден. Начинаем поиск старых сделок по номеру ${phone}...`);
 
   const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, {
     headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
@@ -325,7 +326,7 @@ async function checkDuplicatesForNewLead(leadId, env) {
 export default {
   async fetch(request, env, ctx) {
     console.log("======================");
-    console.log("🔥 ЗАПУСК РАБОЧЕГО ПРОЦЕССА |", request.method);
+    console.log(" ЗАПУСК РАБОЧЕГО ПРОЦЕССА |", request.method);
     console.log("======================");
 
     if (request.method === "GET") return new Response("Webhook works");
@@ -394,7 +395,6 @@ export default {
 
         let newPrice = null;
         
-        // 🆕 ПРОВЕРКА НА ИСКЛЮЧЕНИЕ ПРИ ОБНОВЛЕНИИ
         if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
           if (lead.name && lead.name.toLowerCase().includes("исключение")) {
             console.log("⏭️ [UPDATE] Найдено слово 'исключение' в названии. Маржа/бюджет не меняется.");
@@ -435,7 +435,7 @@ export default {
         return new Response("OK");
       }
 
-      console.log("📋 Тип события: ИЗМЕНЕНИЕ СТАТУСА");
+      console.log(" Тип события: ИЗМЕНЕНИЕ СТАТУСА");
 
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
@@ -473,16 +473,13 @@ export default {
       const patchPayload = {};
       const customFieldsUpdates = [];
 
-      // 1. Очистка причины отказа для этапов 142 и 53410258
       if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
         customFieldsUpdates.push({ field_id: 573457, values: null });
       }
 
-      // 2. Логика бюджета и типа запроса ТОЛЬКО для этапа 142
       if (pipelineId === 5276629 && newStatusId === 142) {
-        // 🆕 ПРОВЕРКА НА ИСКЛЮЧЕНИЕ ПРИ СМЕНЕ СТАТУСА
         if (leadData.name && leadData.name.toLowerCase().includes("исключение")) {
-          console.log("⏭️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
+          console.log("️ [STATUS 142] Найдено слово 'исключение' в названии. Автоматический расчет маржи/бюджета и полей ПРОПУЩЕН.");
         } else {
           const effectiveCategory = deriveCategory(type, model, currentCategory);
           let targetRequestType = null;
@@ -502,16 +499,11 @@ export default {
         }
       }
 
-      // 3. Логика для этапа 143
       if (pipelineId === 5276629 && newStatusId === 143) {
         const status143Updates = processStatus143Logic(fields);
         customFieldsUpdates.push(...status143Updates);
       }
 
-      // ==========================================
-      // 🔒 ПРОВЕРКА ДУБЛЕЙ (СМЕНА НА "СУЩ") И СМЕНА ОТВЕТСТВЕННОГО
-      // ЗАПУСКАЕТСЯ ТОЛЬКО ПРИ ВЫХОДЕ ИЗ ПНЛ! НИКОГДА БОЛЬШЕ!
-      // ==========================================
       const matchedRule = RULES.find(rule =>
         rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
         rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
@@ -527,28 +519,24 @@ export default {
           console.log(`⏭️ Ответственный не меняется (userId=${userId}, actual=${actualResponsibleId})`);
         }
 
-        // 🔍 ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЗАПУСКАЕТСЯ ПРОВЕРКА НА СУЩ!
         const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
         if (duplicateUpdate) {
-          console.log("🔄 Применение обновлений из проверки дубликатов (Сущ) к НОВОЙ сделке.");
+          console.log(" Применение обновлений из проверки дубликатов (Сущ) к НОВОЙ сделке.");
           customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
         }
       } else {
-        console.log("⏭️ Сделка НЕ вышла из ПНЛ. Проверка на Сущ и смена ответственного ПРОПУЩЕНЫ.");
+        console.log("️ Сделка НЕ вышла из ПНЛ. Проверка на Сущ и смена ответственного ПРОПУЩЕНЫ.");
       }
 
-      // --- Обновление даты ---
       if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 &&
           [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         const today = new Date(new Date().setHours(0, 0, 0, 0));
         patchPayload.created_at = Math.floor(today.getTime() / 1000);
       }
 
-      // --- Проверка корректировки ---
       const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
       if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
 
-      // --- Один объединённый PATCH ---
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
 
