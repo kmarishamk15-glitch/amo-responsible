@@ -38,7 +38,14 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 
 const FIELD_PAYMENT_METHOD = 574905;
-const PAYMENT_METHOD_MAP = { 'наличн': 973115, 'карт': 977839, 'кредит': 973117, 'рассрочк': 973117, 'долям': 977071 };
+// Порядок важен: сначала длинные слова, потом короткие (чтобы "рассрочк" не сработало на "рассрочка по цене наличных" раньше времени)
+const PAYMENT_KEYWORDS = [
+  { keys: ['рассрочк'], id: 973117 },   // Кредит/рассрочка
+  { keys: ['кредит'], id: 973117 },     // Кредит/рассрочка
+  { keys: ['наличн', 'нал'], id: 973115 }, // Наличные (и сокращение "нал")
+  { keys: ['карт'], id: 977839 },       // Карта
+  { keys: ['долям'], id: 977071 }       // Долями
+];
 
 async function safeJsonParse(response) {
   try {
@@ -202,41 +209,35 @@ async function checkDuplicatesInBackground(leadId, env) {
         return;
       }
     }
-  } catch (e) { /* Игнорируем фоновые ошибки */ }
+  } catch (e) { /* Игнорируем */ }
 }
 
+// 🆕 УПРОЩЁННАЯ ФУНКЦИЯ: ищет ЛЮБОЕ ключевое слово в тексте
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
-    const text = decodeURIComponent(noteText || "");
-    console.log(`📝 Обработка примечания: ID=${elementId}, type=${elementType}, текст="${text.substring(0, 80)}"`);
+    const text = decodeURIComponent(noteText || "").toLowerCase();
+    console.log(` Обработка примечания: ID=${elementId}, type=${elementType}, текст="${noteText.substring(0, 80)}"`);
 
     if (!text) return;
 
+    // Ищем первое совпадающее ключевое слово
     let enumId = null;
-    let reason = "";
-
-    const excMatch = text.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
-    if (excMatch && excMatch[1]) {
-      const word = excMatch[1].toLowerCase();
-      for (const [key, id] of Object.entries(PAYMENT_METHOD_MAP)) {
-        if (word.includes(key)) { enumId = id; reason = `исключение(${key})`; break; }
-      }
-    }
-
-    if (!enumId) {
-      const aiMatch = text.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
-      if (aiMatch && aiMatch[1]) {
-        const word = aiMatch[1].toLowerCase();
-        for (const [key, id] of Object.entries(PAYMENT_METHOD_MAP)) {
-          if (word.includes(key)) { enumId = id; reason = `ИИ(${key})`; break; }
+    let foundKey = "";
+    
+    for (const item of PAYMENT_KEYWORDS) {
+      for (const key of item.keys) {
+        if (text.includes(key)) {
+          enumId = item.id;
+          foundKey = key;
+          break;
         }
       }
+      if (enumId) break;
     }
 
     if (enumId) {
       await new Promise(r => setTimeout(r, 200)); 
       
-      // Пытаемся обновить именно Сделку (leads), так как поле находится там
       const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${elementId}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
@@ -244,18 +245,24 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
       });
       
       if (res.ok) {
-        console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason})`);
+        console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (найдено слово "${foundKey}")`);
       } else {
         const errText = await res.text();
         console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`⏭️ В примечании не найден способ оплаты`);
+      console.log(`⏭️ В примечании не найдено ни одно ключевое слово`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
   }
+}
+
+// Функция проверки: есть ли в тексте любое ключевое слово
+function hasPaymentKeyword(text) {
+  const lower = text.toLowerCase();
+  return PAYMENT_KEYWORDS.some(item => item.keys.some(key => lower.includes(key)));
 }
 
 export default {
@@ -283,7 +290,8 @@ export default {
         
         console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        if (noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
+        // 🆕 Проверяем наличие ЛЮБОГО ключевого слова (без префиксов)
+        if (noteType === '4' && hasPaymentKeyword(noteText)) {
           ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
         }
         
