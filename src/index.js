@@ -40,6 +40,19 @@ const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 const PAYMENT_METHOD_MAP = { 'наличн': 973115, 'карт': 977839, 'кредит': 973117, 'рассрочк': 973117, 'долям': 977071 };
 
+// Rate limiting: очередь запросов
+const requestQueue = [];
+let lastRequestTime = 0;
+const MIN_INTERVAL = 150; // 150ms между запросами = ~6.6 запросов/сек
+
+async function rateLimitedFetch(url, options) {
+  const now = Date.now();
+  const delay = Math.max(0, MIN_INTERVAL - (now - lastRequestTime));
+  if (delay > 0) await new Promise(r => setTimeout(r, delay));
+  lastRequestTime = Date.now();
+  return fetch(url, options);
+}
+
 async function safeJsonParse(response) {
   try {
     const text = await response.text();
@@ -79,9 +92,8 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
     forceNoDiscount = true;
     const base = BUDGET_IPHONE_BY_PACKAGE[soldPackage];
     budget = base != null ? base * multiplier : null;
-  } else if (category === 974783) {
-    budget = 1500;
-  } else {
+  } else if (category === 974783) { budget = 1500; } 
+  else {
     let table = null;
     if (category === 974777) table = (model === AIRPODS_MAX) ? BUDGET_HARDWARE : BUDGET_AKSY;
     else if (category === 974779) table = BUDGET_HARDWARE;
@@ -92,37 +104,6 @@ function calcBudget(category, model, discount, soldPackage, promo = false) {
     }
   }
   return { budget, forceNoDiscount };
-}
-
-async function getPaymentMethodFromNotes(leadId, env) {
-  try {
-    const notesRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?sort_by=-created_at&limit=1`, {
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-    });
-    if (!notesRes.ok) return null;
-    const notesData = await safeJsonParse(notesRes);
-    if (!notesData) return null;
-
-    const noteText = notesData._embedded?.notes?.[0]?.params?.text || "";
-    if (!noteText) return null;
-
-    const excMatch = noteText.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
-    if (excMatch && excMatch[1]) {
-      const word = excMatch[1].toLowerCase();
-      for (const [key, enumId] of Object.entries(PAYMENT_METHOD_MAP)) {
-        if (word.includes(key)) return { field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] };
-      }
-    }
-
-    const aiMatch = noteText.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
-    if (aiMatch && aiMatch[1]) {
-      const word = aiMatch[1].toLowerCase();
-      for (const [key, enumId] of Object.entries(PAYMENT_METHOD_MAP)) {
-        if (word.includes(key)) return { field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] };
-      }
-    }
-  } catch (e) { /* игнорируем ошибки */ }
-  return null;
 }
 
 function getCorrectionUpdate(fields, responsibleId) {
@@ -140,7 +121,7 @@ function getCorrectionUpdate(fields, responsibleId) {
   return null;
 }
 
-function getBudgetUpdates(lead, fields, promo, logPrefix) {
+function getBudgetUpdates(lead, fields, promo) {
   const custom_fields_values = [];
   let newPrice = null, type = null, model = null, currentDiscount = null, currentSoldPackage = null, currentCategory = null;
   for (const field of fields) {
@@ -153,7 +134,6 @@ function getBudgetUpdates(lead, fields, promo, logPrefix) {
   }
   const effectiveCategory = deriveCategory(type, model, currentCategory);
   const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
-
   if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
     custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
   }
@@ -177,239 +157,167 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
-async function checkDuplicatesForNewLead(leadId, env) {
-  try {
-    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-    if (!leadRes.ok) return null;
-    const lead = await safeJsonParse(leadRes);
-    if (!lead) return null;
-
-    let phone = null;
-    if (lead._embedded?.contacts?.length > 0) {
-      const contactRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${lead._embedded.contacts[0].id}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-      if (contactRes.ok) {
-        const contact = await safeJsonParse(contactRes);
-        if (contact) {
-          const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
-          let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
-          if (!phoneField?.values?.length) {
-            phoneField = contact.custom_fields_values?.find(f => {
-              const val = f.values?.[0]?.value;
-              if (!val) return false;
-              const digits = val.replace(/\D/g, '');
-              return digits.length === 11 && (digits.startsWith('7') || digits.startsWith('8'));
-            });
-          }
-          if (phoneField?.values?.length) {
-            phone = phoneField.values[0].value.replace(/\D/g, '');
-            if (phone.startsWith('8') && phone.length === 11) phone = '7' + phone.slice(1);
-          }
-        }
-      }
-    }
-    if (!phone || phone.length !== 11) return null;
-
-    const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-    if (!searchLeadsRes.ok) return null;
-    const searchLeadsData = await safeJsonParse(searchLeadsRes);
-    if (!searchLeadsData) return null;
-
-    const foundLeads = searchLeadsData._embedded?.leads || [];
-    const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
-
-    for (const oldLead of foundLeads) {
-      if (oldLead.id === leadId || oldLead.created_at < cutoffDate) continue;
-      const reqTypeField = oldLead.custom_fields_values?.find(f => f.field_id === FIELD_REQUEST_TYPE);
-      const currentType = reqTypeField?.values?.[0]?.enum_id;
-      if (ALLOWED_OLD_TYPES.includes(currentType)) {
-        return { custom_fields_values: [{ field_id: FIELD_REQUEST_TYPE, values: [{ enum_id: NEW_TYPE_VALUE }] }] };
-      }
-    }
-  } catch (e) { /* игнорируем */ }
-  return null;
-}
-
 export default {
   async fetch(request, env, ctx) {
     try {
-      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) {
-        console.error("❌ ENV NOT SET");
-        return new Response("OK"); // ✅ ВСЕГДА 200 OK!
-      }
+      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) return new Response("OK");
 
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
       // =========================
-      // 1. ОБНОВЛЕНИЕ ПОЛЕЙ
+      // 1. ОБНОВЛЕНИЕ ПОЛЕЙ (1 запрос: PATCH)
       // =========================
       if (params.has("leads[update][0][id]")) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        try {
-          const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-          if (!leadRes.ok) return new Response("OK");
-          const lead = await safeJsonParse(leadRes);
-          if (!lead) return new Response("OK");
-
-          const fields = lead.custom_fields_values || [];
-          let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
-          for (const field of fields) {
-            if (!field.values?.length) continue;
-            if (field.field_id === 466253) type = field.values[0].enum_id;
-            if (field.field_id === 577689) model = field.values[0].enum_id;
-            if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
-            if (field.field_id === 582429) currentPackage = field.values[0].enum_id;
-            if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
-          }
-
-          const targetCategory = deriveCategory(type, model, currentCategory);
-          const targetPackage = derivePackage(type, model, currentPackage);
-          let soldPackage = null;
-          if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
-            if (currentPackage === 982607) soldPackage = 982609;
-            else if (currentPackage === 982611) soldPackage = 982617;
-            else if (currentPackage === 982613) soldPackage = 982615;
-            else if (currentPackage === 982619) soldPackage = 982621;
-          }
-
-          const custom_fields_values = [];
-          if (currentCategory !== targetCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
-          if (targetPackage && currentPackage !== targetPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
-          if (soldPackage && currentSoldPackage !== soldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
-
-          const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
-          if (correctionUpdate) custom_fields_values.push(correctionUpdate);
-
-          let newPrice = null;
-          if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
-            if (!lead.name || !lead.name.toLowerCase().includes("исключение")) {
-              const promo = isPromo(lead.name);
-              const budgetUpdates = getBudgetUpdates(lead, fields, promo, "[UPDATE]");
-              custom_fields_values.push(...budgetUpdates.custom_fields_values);
-              newPrice = budgetUpdates.newPrice;
-            }
-          }
-          if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
-            custom_fields_values.push(...processStatus143Logic(fields));
-          }
-
-          const paymentMethodUpdate = await getPaymentMethodFromNotes(leadId, env);
-          if (paymentMethodUpdate) custom_fields_values.push(paymentMethodUpdate);
-
-          if (custom_fields_values.length === 0 && newPrice == null) return new Response("OK");
-
-          const patchBody = { custom_fields_values };
-          if (newPrice != null) patchBody.price = newPrice;
-
-          await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            method: "PATCH",
-            headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-            body: JSON.stringify(patchBody)
-          });
-        } catch (e) {
-          console.error("Ошибка в leads[update]:", e.message);
-        }
-        return new Response("OK"); // ✅ ВСЕГДА 200 OK!
-      }
-
-      // =========================
-      // 2. СМЕНА СТАТУСА
-      // =========================
-      if (!params.has("leads[status][0][id]")) return new Response("OK");
-
-      try {
-        const leadId = Number(params.get("leads[status][0][id]"));
-        const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
-        const newStatusId = Number(params.get("leads[status][0][status_id]"));
-        const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-        const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
-        const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
-
-        if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
-
-        const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-        if (!leadDetailsRes.ok) return new Response("OK");
-        const leadData = await safeJsonParse(leadDetailsRes);
-        if (!leadData) return new Response("OK");
-
-        const fields = leadData.custom_fields_values || [];
-        const actualResponsibleId = leadData.responsible_user_id;
-        let type = null, model = null, currentCategory = null;
+        
+        // Читаем данные из тела вебхука (не делаем GET запрос!)
+        const customFieldsUpdate = params.get("leads[update][0][custom_fields_values]");
+        const fields = customFieldsUpdate ? JSON.parse(customFieldsUpdate) : [];
+        
+        let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
         for (const field of fields) {
           if (!field.values?.length) continue;
           if (field.field_id === 466253) type = field.values[0].enum_id;
           if (field.field_id === 577689) model = field.values[0].enum_id;
           if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+          if (field.field_id === 582429) currentPackage = field.values[0].enum_id;
+          if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
         }
 
-        const patchPayload = {};
-        const customFieldsUpdates = [];
-
-        if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
-          customFieldsUpdates.push({ field_id: 573457, values: null });
+        const targetCategory = deriveCategory(type, model, currentCategory);
+        const targetPackage = derivePackage(type, model, currentPackage);
+        let soldPackage = null;
+        
+        // Получаем статус из webhook
+        const statusId = Number(params.get("leads[update][0][status_id]") || 0);
+        if (statusId === 142) {
+          if (currentPackage === 982607) soldPackage = 982609;
+          else if (currentPackage === 982611) soldPackage = 982617;
+          else if (currentPackage === 982613) soldPackage = 982615;
+          else if (currentPackage === 982619) soldPackage = 982621;
         }
 
-        if (pipelineId === 5276629 && newStatusId === 142) {
-          if (!leadData.name || !leadData.name.toLowerCase().includes("исключение")) {
-            const effectiveCategory = deriveCategory(type, model, currentCategory);
-            let targetRequestType = null;
-            if (effectiveCategory) {
-              if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
-              else if (effectiveCategory === 974781) targetRequestType = 938373;
-              else if (effectiveCategory === 974783) targetRequestType = 957159;
-            }
-            if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
+        const custom_fields_values = [];
+        if (currentCategory !== targetCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
+        if (targetPackage && currentPackage !== targetPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
+        if (soldPackage && currentSoldPackage !== soldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
 
-            const promo = isPromo(leadData.name);
-            const budgetUpdates = getBudgetUpdates(leadData, fields, promo, "[STATUS 142]");
-            customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
-            if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
+        const responsibleId = Number(params.get("leads[update][0][responsible_user_id]") || 0);
+        const correctionUpdate = getCorrectionUpdate(fields, responsibleId);
+        if (correctionUpdate) custom_fields_values.push(correctionUpdate);
+
+        if (statusId === 143) {
+          custom_fields_values.push(...processStatus143Logic(fields));
+        }
+
+        if (custom_fields_values.length === 0) return new Response("OK");
+
+        await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ custom_fields_values })
+        });
+        
+        return new Response("OK");
+      }
+
+      // =========================
+      // 2. СМЕНА СТАТУСА (1-2 запроса)
+      // =========================
+      if (!params.has("leads[status][0][id]")) return new Response("OK");
+
+      const leadId = Number(params.get("leads[status][0][id]"));
+      const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
+      const newStatusId = Number(params.get("leads[status][0][status_id]"));
+      const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+      const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
+
+      if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
+
+      // Получаем данные сделки (1 запрос)
+      const leadDetailsRes = await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, {
+        headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+      });
+      const leadData = await safeJsonParse(leadDetailsRes);
+      if (!leadData) return new Response("OK");
+
+      const fields = leadData.custom_fields_values || [];
+      const actualResponsibleId = leadData.responsible_user_id;
+      
+      let type = null, model = null, currentCategory = null;
+      for (const field of fields) {
+        if (!field.values?.length) continue;
+        if (field.field_id === 466253) type = field.values[0].enum_id;
+        if (field.field_id === 577689) model = field.values[0].enum_id;
+        if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+      }
+
+      const patchPayload = {};
+      const customFieldsUpdates = [];
+
+      if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
+        customFieldsUpdates.push({ field_id: 573457, values: null });
+      }
+
+      if (pipelineId === 5276629 && newStatusId === 142) {
+        if (!leadData.name || !leadData.name.toLowerCase().includes("исключение")) {
+          const effectiveCategory = deriveCategory(type, model, currentCategory);
+          let targetRequestType = null;
+          if (effectiveCategory) {
+            if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
+            else if (effectiveCategory === 974781) targetRequestType = 938373;
+            else if (effectiveCategory === 974783) targetRequestType = 957159;
           }
-          const paymentMethodUpdate = await getPaymentMethodFromNotes(leadId, env);
-          if (paymentMethodUpdate) customFieldsUpdates.push(paymentMethodUpdate);
+          if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
+
+          const promo = isPromo(leadData.name);
+          const budgetUpdates = getBudgetUpdates(leadData, fields, promo);
+          customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
+          if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
         }
+      }
 
-        if (pipelineId === 5276629 && newStatusId === 143) {
-          customFieldsUpdates.push(...processStatus143Logic(fields));
+      if (pipelineId === 5276629 && newStatusId === 143) {
+        customFieldsUpdates.push(...processStatus143Logic(fields));
+      }
+
+      const matchedRule = RULES.find(rule =>
+        rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
+        rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
+      );
+
+      if (matchedRule) {
+        if (userId && actualResponsibleId !== userId) {
+          patchPayload.responsible_user_id = userId;
         }
+        // ❌ ОТКЛЮЧАЕМ проверку дублей (слишком много запросов)
+        // const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
+        // if (duplicateUpdate) customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
+      }
 
-        const matchedRule = RULES.find(rule =>
-          rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
-          rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
-        );
+      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+        patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
+      }
 
-        if (matchedRule) {
-          if (userId && actualResponsibleId !== userId) {
-            patchPayload.responsible_user_id = userId;
-          }
-          const duplicateUpdate = await checkDuplicatesForNewLead(leadId, env);
-          if (duplicateUpdate) customFieldsUpdates.push(...duplicateUpdate.custom_fields_values);
-        }
+      const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
+      if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
 
-        if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
-          patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
-        }
-
-        const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
-        if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
-
-        if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
-          if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-          
-          await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            method: "PATCH",
-            headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify(patchPayload)
-          });
-        }
-      } catch (e) {
-        console.error("Ошибка в leads[status]:", e.message);
+      if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
+        if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
+        
+        await rateLimitedFetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(patchPayload)
+        });
       }
       
-      return new Response("OK"); // ✅ ВСЕГДА 200 OK!
+      return new Response("OK");
     } catch (e) {
-      console.error("💥 GLOBAL ERROR:", e.message);
-      return new Response("OK"); // ✅ ВСЕГДА 200 OK!
+      console.error("Error:", e.message);
+      return new Response("OK"); // Всегда 200!
     }
   }
 };
