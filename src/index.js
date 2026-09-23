@@ -202,20 +202,19 @@ async function checkDuplicatesInBackground(leadId, env) {
         return;
       }
     }
-  } catch (e) { /* Игнорируем */ }
+  } catch (e) { /* Игнорируем фоновые ошибки */ }
 }
 
-async function updatePaymentMethodFromNote(leadId, noteText, env) {
+async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     const text = decodeURIComponent(noteText || "");
-    console.log(`📝 Обработка примечания для сделки ${leadId}: "${text.substring(0, 100)}"`);
+    console.log(`📝 Обработка примечания: ID=${elementId}, type=${elementType}, текст="${text.substring(0, 80)}"`);
 
     if (!text) return;
 
     let enumId = null;
     let reason = "";
 
-    // 1. Приоритет: Исключение
     const excMatch = text.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
     if (excMatch && excMatch[1]) {
       const word = excMatch[1].toLowerCase();
@@ -224,7 +223,6 @@ async function updatePaymentMethodFromNote(leadId, noteText, env) {
       }
     }
 
-    // 2. Автоматика ИИ
     if (!enumId) {
       const aiMatch = text.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
       if (aiMatch && aiMatch[1]) {
@@ -237,15 +235,20 @@ async function updatePaymentMethodFromNote(leadId, noteText, env) {
 
     if (enumId) {
       await new Promise(r => setTimeout(r, 200)); 
-      const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      
+      // Пытаемся обновить именно Сделку (leads), так как поле находится там
+      const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${elementId}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] }] })
       });
+      
       if (res.ok) {
-        console.log(`✅ Оплата: сделка ${leadId} → ${enumId} (${reason})`);
+        console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason})`);
       } else {
-        console.log(`❌ Ошибка установки оплаты: ${res.status}`);
+        const errText = await res.text();
+        console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
+        console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
       console.log(`⏭️ В примечании не найден способ оплаты`);
@@ -263,7 +266,6 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
-      // ✅ ИСПРАВЛЕНО: Ловим формат leads[note], который использует твоя amoCRM
       const hasNotes = params.has("leads[note][0][note][element_id]") || params.has("notes[add][0][element_id]");
       const hasStatus = params.has("leads[status][0][id]");
       const hasUpdate = params.has("leads[update][0][id]");
@@ -271,27 +273,25 @@ export default {
       console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
 
       // =========================
-      // 📝 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
+      // 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
       // =========================
       if (hasNotes) {
-        // Берем из leads[note], если нет - fallback на notes[add]
-        const leadId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
+        const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
         const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
-        console.log(`📝 Детали: element_id=${leadId}, type=${elementType}, note_type=${noteType}, text="${noteText.substring(0, 80)}"`);
+        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        // element_type = 1 (сделка), note_type = 4 (текстовое примечание)
-        if (elementType === '1' && noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
-          ctx.waitUntil(updatePaymentMethodFromNote(leadId, noteText, env));
+        if (noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
+          ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
         }
         
         return new Response("OK");
       }
 
       // =========================
-      // 🔄 2. ОБНОВЛЕНИЕ ПОЛЕЙ
+      // 2. ОБНОВЛЕНИЕ ПОЛЕЙ
       // =========================
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
@@ -356,7 +356,7 @@ export default {
       }
 
       // =========================
-      // 🔄 3. СМЕНА СТАТУСА
+      // 3. СМЕНА СТАТУСА
       // =========================
       if (!hasStatus) return new Response("OK");
 
