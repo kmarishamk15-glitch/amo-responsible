@@ -144,7 +144,6 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
-//  ФОН: Проверка дублей (с задержкой для защиты лимита)
 async function checkDuplicatesInBackground(leadId, env) {
   try {
     await new Promise(r => setTimeout(r, 400)); 
@@ -206,42 +205,56 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-//  ОБНОВЛЕНИЕ СПОСОБА ОПЛАТЫ (вызывается из вебхука notes[add])
+// ✅ ПРАВИЛЬНАЯ ФУНКЦИЯ: обновляет способ оплаты из текста примечания
 async function updatePaymentMethodFromNote(leadId, noteText, env) {
   try {
-    if (!noteText) return;
+    // Декодируем текст (amoCRM шлёт URL-encoded)
+    const text = decodeURIComponent(noteText || "");
+    console.log(` Примечание для сделки ${leadId}: "${text.substring(0, 100)}"`);
+
+    if (!text) return;
 
     let enumId = null;
+    let reason = "";
+
     // 1. Приоритет: Исключение
-    const excMatch = noteText.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
+    const excMatch = text.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
     if (excMatch && excMatch[1]) {
       const word = excMatch[1].toLowerCase();
       for (const [key, id] of Object.entries(PAYMENT_METHOD_MAP)) {
-        if (word.includes(key)) { enumId = id; break; }
+        if (word.includes(key)) { enumId = id; reason = `исключение(${key})`; break; }
       }
     }
 
     // 2. Автоматика ИИ
     if (!enumId) {
-      const aiMatch = noteText.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
+      const aiMatch = text.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
       if (aiMatch && aiMatch[1]) {
         const word = aiMatch[1].toLowerCase();
         for (const [key, id] of Object.entries(PAYMENT_METHOD_MAP)) {
-          if (word.includes(key)) { enumId = id; break; }
+          if (word.includes(key)) { enumId = id; reason = `ИИ(${key})`; break; }
         }
       }
     }
 
     if (enumId) {
       await new Promise(r => setTimeout(r, 200)); 
-      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] }] })
       });
-      console.log(`✅ Оплата: сделка ${leadId}, установлено ${enumId}`);
+      if (res.ok) {
+        console.log(`✅ Оплата: сделка ${leadId} → ${enumId} (${reason})`);
+      } else {
+        console.log(`❌ Ошибка установки оплаты: ${res.status}`);
+      }
+    } else {
+      console.log(`⏭️ В примечании не найден способ оплаты`);
     }
-  } catch (e) { /* Игнорируем */ }
+  } catch (e) {
+    console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
+  }
 }
 
 export default {
@@ -252,31 +265,34 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
+      // Логируем тип события для отладки
+      const hasNotes = params.has("notes[add][0][entity_id]");
+      const hasStatus = params.has("leads[status][0][id]");
+      const hasUpdate = params.has("leads[update][0][id]");
+      console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
+
       // =========================
-      // 📝 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ (notes[add])
+      // 📝 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
       // =========================
-      if (params.has("notes[add][0][entity_id]")) {
+      if (hasNotes) {
         const leadId = Number(params.get("notes[add][0][entity_id]"));
-        const noteType = params.get("notes[add][0][type]");
+        const noteType = params.get("notes[add][0][note_type]");
+        const noteText = params.get("notes[add][0][text]") || "";
         
-        // Обрабатываем только текстовые примечания
-        if (noteType === "common") {
-          const noteText = params.get("notes[add][0][text]") || "";
-          
-          // Проверяем, есть ли в примечании информация о способе оплаты
-          if (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение")) {
-            // Запускаем в фоне, чтобы сразу ответить amoCRM
-            ctx.waitUntil(updatePaymentMethodFromNote(leadId, noteText, env));
-          }
+        console.log(`📝 Примечание: lead=${leadId}, type=${noteType}, text="${noteText.substring(0, 80)}"`);
+        
+        // note_type = 4 это обычное текстовое примечание
+        if (noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
+          ctx.waitUntil(updatePaymentMethodFromNote(leadId, noteText, env));
         }
         
         return new Response("OK");
       }
 
       // =========================
-      //  2. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
+      // 🔄 2. ОБНОВЛЕНИЕ ПОЛЕЙ
       // =========================
-      if (params.has("leads[update][0][id]")) {
+      if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
         if (!leadRes.ok) return new Response("OK");
@@ -339,9 +355,9 @@ export default {
       }
 
       // =========================
-      // 🔄 3. СМЕНА СТАТУСА (leads[status])
+      // 🔄 3. СМЕНА СТАТУСА
       // =========================
-      if (!params.has("leads[status][0][id]")) return new Response("OK");
+      if (!hasStatus) return new Response("OK");
 
       const leadId = Number(params.get("leads[status][0][id]"));
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
@@ -406,7 +422,6 @@ export default {
           patchPayload.responsible_user_id = userId;
           console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
-        // 🕒 Запускаем проверку дублей в фоне
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
