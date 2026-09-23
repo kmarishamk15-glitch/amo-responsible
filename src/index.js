@@ -215,6 +215,7 @@ async function updatePaymentMethodFromNote(leadId, noteText, env) {
     let enumId = null;
     let reason = "";
 
+    // 1. Приоритет: Исключение
     const excMatch = text.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
     if (excMatch && excMatch[1]) {
       const word = excMatch[1].toLowerCase();
@@ -223,6 +224,7 @@ async function updatePaymentMethodFromNote(leadId, noteText, env) {
       }
     }
 
+    // 2. Автоматика ИИ
     if (!enumId) {
       const aiMatch = text.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
       if (aiMatch && aiMatch[1]) {
@@ -261,24 +263,26 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
-      // 🔍 ТОТАЛЬНАЯ ДИАГНОСТИКА: выводим ВСЕ ключи, которые прислала amoCRM
-      const allKeys = Array.from(params.keys());
-      console.log(`🔍 ВСЕ КЛЮЧИ В ЗАПРОСЕ:`, allKeys.join(', '));
-
-      const hasNotes = params.has("notes[add][0][element_id]");
+      // ✅ ИСПРАВЛЕНО: Ловим формат leads[note], который использует твоя amoCRM
+      const hasNotes = params.has("leads[note][0][note][element_id]") || params.has("notes[add][0][element_id]");
       const hasStatus = params.has("leads[status][0][id]");
       const hasUpdate = params.has("leads[update][0][id]");
       
       console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
 
+      // =========================
+      // 📝 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
+      // =========================
       if (hasNotes) {
-        const leadId = Number(params.get("notes[add][0][element_id]"));
-        const elementType = params.get("notes[add][0][element_type]");
-        const noteType = params.get("notes[add][0][note_type]");
-        const noteText = params.get("notes[add][0][text]") || "";
+        // Берем из leads[note], если нет - fallback на notes[add]
+        const leadId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
+        const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
+        const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
+        const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
         console.log(`📝 Детали: element_id=${leadId}, type=${elementType}, note_type=${noteType}, text="${noteText.substring(0, 80)}"`);
         
+        // element_type = 1 (сделка), note_type = 4 (текстовое примечание)
         if (elementType === '1' && noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
           ctx.waitUntil(updatePaymentMethodFromNote(leadId, noteText, env));
         }
@@ -286,6 +290,9 @@ export default {
         return new Response("OK");
       }
 
+      // =========================
+      // 🔄 2. ОБНОВЛЕНИЕ ПОЛЕЙ
+      // =========================
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
@@ -348,6 +355,9 @@ export default {
         return new Response("OK");
       }
 
+      // =========================
+      // 🔄 3. СМЕНА СТАТУСА
+      // =========================
       if (!hasStatus) return new Response("OK");
 
       const leadId = Number(params.get("leads[status][0][id]"));
