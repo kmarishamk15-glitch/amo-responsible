@@ -144,7 +144,7 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
-// 🕒 ФОН: Проверка дублей (с задержкой для защиты лимита 7 req/sec)
+//  ФОН: Проверка дублей (с задержкой для защиты лимита)
 async function checkDuplicatesInBackground(leadId, env) {
   try {
     await new Promise(r => setTimeout(r, 400)); 
@@ -203,21 +203,12 @@ async function checkDuplicatesInBackground(leadId, env) {
         return;
       }
     }
-  } catch (e) { /* Тихо игнорируем фоновые ошибки, чтобы не спамить логи */ }
+  } catch (e) { /* Игнорируем */ }
 }
 
-// 🕒 ФОН: Проверка способа оплаты (с приоритетом "исключение")
-async function updatePaymentMethodInBackground(leadId, env) {
+//  ОБНОВЛЕНИЕ СПОСОБА ОПЛАТЫ (вызывается из вебхука notes[add])
+async function updatePaymentMethodFromNote(leadId, noteText, env) {
   try {
-    await new Promise(r => setTimeout(r, 800)); 
-    const notesRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?sort_by=-created_at&limit=1`, {
-      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-    });
-    if (!notesRes.ok) return;
-    const notesData = await safeJsonParse(notesRes);
-    if (!notesData) return;
-
-    const noteText = notesData._embedded?.notes?.[0]?.params?.text || "";
     if (!noteText) return;
 
     let enumId = null;
@@ -230,7 +221,7 @@ async function updatePaymentMethodInBackground(leadId, env) {
       }
     }
 
-    // 2. Если нет исключения, берем автоматику ИИ
+    // 2. Автоматика ИИ
     if (!enumId) {
       const aiMatch = noteText.match(/Способ\s+оплаты\s*:\s*([^\s(]+)/i);
       if (aiMatch && aiMatch[1]) {
@@ -242,7 +233,7 @@ async function updatePaymentMethodInBackground(leadId, env) {
     }
 
     if (enumId) {
-      await new Promise(r => setTimeout(r, 300)); 
+      await new Promise(r => setTimeout(r, 200)); 
       await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
@@ -250,7 +241,7 @@ async function updatePaymentMethodInBackground(leadId, env) {
       });
       console.log(`✅ Оплата: сделка ${leadId}, установлено ${enumId}`);
     }
-  } catch (e) { /* Тихо игнорируем */ }
+  } catch (e) { /* Игнорируем */ }
 }
 
 export default {
@@ -262,7 +253,28 @@ export default {
       const params = new URLSearchParams(rawBody);
 
       // =========================
-      // 1. ОБНОВЛЕНИЕ ПОЛЕЙ
+      // 📝 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ (notes[add])
+      // =========================
+      if (params.has("notes[add][0][entity_id]")) {
+        const leadId = Number(params.get("notes[add][0][entity_id]"));
+        const noteType = params.get("notes[add][0][type]");
+        
+        // Обрабатываем только текстовые примечания
+        if (noteType === "common") {
+          const noteText = params.get("notes[add][0][text]") || "";
+          
+          // Проверяем, есть ли в примечании информация о способе оплаты
+          if (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение")) {
+            // Запускаем в фоне, чтобы сразу ответить amoCRM
+            ctx.waitUntil(updatePaymentMethodFromNote(leadId, noteText, env));
+          }
+        }
+        
+        return new Response("OK");
+      }
+
+      // =========================
+      //  2. ОБНОВЛЕНИЕ ПОЛЕЙ (leads[update])
       // =========================
       if (params.has("leads[update][0][id]")) {
         const leadId = Number(params.get("leads[update][0][id]"));
@@ -323,13 +335,11 @@ export default {
           });
         }
 
-        // 🕒 Запускаем в фоне, НЕ задерживая ответ amoCRM
-        ctx.waitUntil(updatePaymentMethodInBackground(leadId, env));
         return new Response("OK");
       }
 
       // =========================
-      // 2. СМЕНА СТАТУСА
+      // 🔄 3. СМЕНА СТАТУСА (leads[status])
       // =========================
       if (!params.has("leads[status][0][id]")) return new Response("OK");
 
@@ -416,13 +426,9 @@ export default {
         });
       }
 
-      // 🕒 Запускаем проверку способа оплаты в фоне
-      ctx.waitUntil(updatePaymentMethodInBackground(leadId, env));
-
-      return new Response("OK"); // ✅ ВСЕГДА 200 OK ДЛЯ AMOCRM!
+      return new Response("OK");
 
     } catch (e) {
-      // Даже при глобальной ошибке возвращаем OK, чтобы amoCRM не отключала вебхук
       return new Response("OK"); 
     }
   }
