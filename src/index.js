@@ -205,12 +205,10 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-// ✅ ПРАВИЛЬНАЯ ФУНКЦИЯ: обновляет способ оплаты из текста примечания
 async function updatePaymentMethodFromNote(leadId, noteText, env) {
   try {
-    // Декодируем текст (amoCRM шлёт URL-encoded)
     const text = decodeURIComponent(noteText || "");
-    console.log(` Примечание для сделки ${leadId}: "${text.substring(0, 100)}"`);
+    console.log(`📝 Обработка примечания для сделки ${leadId}: "${text.substring(0, 100)}"`);
 
     if (!text) return;
 
@@ -265,24 +263,26 @@ export default {
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
 
-      // Логируем тип события для отладки
-      const hasNotes = params.has("notes[add][0][entity_id]");
+      // ✅ ИСПРАВЛЕНО: element_id вместо entity_id
+      const hasNotes = params.has("notes[add][0][element_id]");
       const hasStatus = params.has("leads[status][0][id]");
       const hasUpdate = params.has("leads[update][0][id]");
+      
       console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
 
       // =========================
       // 📝 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
       // =========================
       if (hasNotes) {
-        const leadId = Number(params.get("notes[add][0][entity_id]"));
+        const leadId = Number(params.get("notes[add][0][element_id]"));
+        const elementType = params.get("notes[add][0][element_type]");
         const noteType = params.get("notes[add][0][note_type]");
         const noteText = params.get("notes[add][0][text]") || "";
         
-        console.log(`📝 Примечание: lead=${leadId}, type=${noteType}, text="${noteText.substring(0, 80)}"`);
+        console.log(`📝 Детали: element_id=${leadId}, type=${elementType}, note_type=${noteType}, text="${noteText.substring(0, 80)}"`);
         
-        // note_type = 4 это обычное текстовое примечание
-        if (noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
+        // element_type = 1 (сделка), note_type = 4 (текстовое примечание)
+        if (elementType === '1' && noteType === '4' && (noteText.includes("Способ оплаты") || noteText.toLowerCase().includes("исключение"))) {
           ctx.waitUntil(updatePaymentMethodFromNote(leadId, noteText, env));
         }
         
