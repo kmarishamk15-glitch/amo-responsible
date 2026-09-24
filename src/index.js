@@ -38,13 +38,13 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 
 const FIELD_PAYMENT_METHOD = 574905;
-// Порядок важен: сначала длинные слова, потом короткие (чтобы "рассрочк" не сработало на "рассрочка по цене наличных" раньше времени)
+// ✅ ДОБАВЛЕНО: 'наличка' в список ключевых слов для Наличные
 const PAYMENT_KEYWORDS = [
-  { keys: ['рассрочк'], id: 973117 },   // Кредит/рассрочка
-  { keys: ['кредит'], id: 973117 },     // Кредит/рассрочка
-  { keys: ['наличные', 'нал'], id: 973115 }, // Наличные (и сокращение "нал")
-  { keys: ['карт'], id: 977839 },       // Карта
-  { keys: ['долям'], id: 977071 }       // Долями
+  { keys: ['рассрочк'], id: 973117 },
+  { keys: ['кредит'], id: 973117 },
+  { keys: ['наличные', 'наличка', 'нал', 'наличку'], id: 973115 },
+  { keys: ['карт'], id: 977839 },
+  { keys: ['долям'], id: 977071 }
 ];
 
 async function safeJsonParse(response) {
@@ -212,7 +212,6 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-// 🆕 УПРОЩЁННАЯ ФУНКЦИЯ: ищет ЛЮБОЕ ключевое слово в тексте
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     const text = decodeURIComponent(noteText || "").toLowerCase();
@@ -220,7 +219,6 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
 
     if (!text) return;
 
-    // Ищем первое совпадающее ключевое слово
     let enumId = null;
     let foundKey = "";
     
@@ -259,7 +257,6 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
   }
 }
 
-// Функция проверки: есть ли в тексте любое ключевое слово
 function hasPaymentKeyword(text) {
   const lower = text.toLowerCase();
   return PAYMENT_KEYWORDS.some(item => item.keys.some(key => lower.includes(key)));
@@ -279,9 +276,6 @@ export default {
       
       console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
 
-      // =========================
-      // 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
-      // =========================
       if (hasNotes) {
         const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
         const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
@@ -290,7 +284,6 @@ export default {
         
         console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        // 🆕 Проверяем наличие ЛЮБОГО ключевого слова (без префиксов)
         if (noteType === '4' && hasPaymentKeyword(noteText)) {
           ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
         }
@@ -298,9 +291,6 @@ export default {
         return new Response("OK");
       }
 
-      // =========================
-      // 2. ОБНОВЛЕНИЕ ПОЛЕЙ
-      // =========================
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
@@ -363,9 +353,6 @@ export default {
         return new Response("OK");
       }
 
-      // =========================
-      // 3. СМЕНА СТАТУСА
-      // =========================
       if (!hasStatus) return new Response("OK");
 
       const leadId = Number(params.get("leads[status][0][id]"));
