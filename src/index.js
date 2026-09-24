@@ -38,14 +38,24 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 
 const FIELD_PAYMENT_METHOD = 574905;
-// ✅ ДОБАВЛЕНО: 'наличка' в список ключевых слов для Наличные
+
+// ✅ Regex-ключи: проверяем слово целиком (не часть другого слова)
+// "наличие" НЕ сработает, "наличные" — сработает
+// "картой" — сработает (отдельное слово), "карта" внутри "картошка" — нет
 const PAYMENT_KEYWORDS = [
-  { keys: ['рассрочк'], id: 973117 },
-  { keys: ['кредит'], id: 973117 },
-  { keys: ['наличные', 'наличка', 'нал', 'наличку'], id: 973115 },
-  { keys: ['карт'], id: 977839 },
-  { keys: ['долям'], id: 977071 }
+  { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
+  { keys: ['кредит', 'кредитом', 'кредиту', 'кредите'], id: 973117 },
+  { keys: ['наличные', 'наличка', 'нал', 'налом', 'наличными', 'наличкой'], id: 973115 },
+  { keys: ['карта', 'картой', 'карте', 'карту'], id: 977839 },
+  { keys: ['долями', 'долям'], id: 977071 }
 ];
+
+// ️ Regex-проверка: ключевое слово должно быть самостоятельным (не частью другого слова)
+function matchesKeyword(text, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(^|[^а-яёa-z0-9])${escaped}([^а-яёa-z0-9]|$)`, 'i');
+  return regex.test(text);
+}
 
 async function safeJsonParse(response) {
   try {
@@ -212,6 +222,7 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
+// 🆕 Regex-поиск ключевого слова в примечании
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     const text = decodeURIComponent(noteText || "").toLowerCase();
@@ -224,7 +235,7 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
     
     for (const item of PAYMENT_KEYWORDS) {
       for (const key of item.keys) {
-        if (text.includes(key)) {
+        if (matchesKeyword(text, key)) {
           enumId = item.id;
           foundKey = key;
           break;
@@ -257,9 +268,10 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
   }
 }
 
+// 🆕 Regex-проверка наличия ключевого слова
 function hasPaymentKeyword(text) {
   const lower = text.toLowerCase();
-  return PAYMENT_KEYWORDS.some(item => item.keys.some(key => lower.includes(key)));
+  return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
 }
 
 export default {
@@ -276,6 +288,9 @@ export default {
       
       console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
 
+      // =========================
+      // 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
+      // =========================
       if (hasNotes) {
         const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
         const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
@@ -291,6 +306,9 @@ export default {
         return new Response("OK");
       }
 
+      // =========================
+      // 2. ОБНОВЛЕНИЕ ПОЛЕЙ
+      // =========================
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
@@ -353,6 +371,9 @@ export default {
         return new Response("OK");
       }
 
+      // =========================
+      // 3. СМЕНА СТАТУСА
+      // =========================
       if (!hasStatus) return new Response("OK");
 
       const leadId = Number(params.get("leads[status][0][id]"));
