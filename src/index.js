@@ -29,7 +29,17 @@ const BUDGET_BU = { 972987: 2500, 981917: 1750, 981919: 1125, 972989: 1125, 9763
 const ACCESSORIES = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
 const HARDWARE_MODELS = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
 const ANDROID_MODELS = [975979, 976893];
-const IPHONES = [975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999, 976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015, 976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031, 976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047, 976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055, 979183, 981729, 981731, 981733, 981735, 982255];
+
+// ✅ ДОБАВЛЕНЫ НОВЫЕ МОДЕЛИ: iPhone 18 Pro Max, iPhone 18 Pro, iPhone 18, iPhone Duo
+const IPHONES = [
+  975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
+  976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015,
+  976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031,
+  976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047,
+  976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055,
+  979183, 981729, 981731, 981733, 981735, 982255,
+  983885, 983887, 983889, 983891
+];
 
 const TARGET_PIPELINE_OLD = 5276629;
 const TARGET_STATUS_OLD = 143;
@@ -39,9 +49,6 @@ const NEW_TYPE_VALUE = 931811;
 
 const FIELD_PAYMENT_METHOD = 574905;
 
-// ✅ Regex-ключи: проверяем слово целиком (не часть другого слова)
-// "наличие" НЕ сработает, "наличные" — сработает
-// "картой" — сработает (отдельное слово), "карта" внутри "картошка" — нет
 const PAYMENT_KEYWORDS = [
   { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
   { keys: ['кредит', 'кредитом', 'кредиту', 'кредите'], id: 973117 },
@@ -50,7 +57,6 @@ const PAYMENT_KEYWORDS = [
   { keys: ['долями', 'долям'], id: 977071 }
 ];
 
-// ️ Regex-проверка: ключевое слово должно быть самостоятельным (не частью другого слова)
 function matchesKeyword(text, key) {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp(`(^|[^а-яёa-z0-9])${escaped}([^а-яёa-z0-9]|$)`, 'i');
@@ -222,7 +228,6 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-// 🆕 Regex-поиск ключевого слова в примечании
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     const text = decodeURIComponent(noteText || "").toLowerCase();
@@ -261,14 +266,13 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`⏭️ В примечании не найдено ни одно ключевое слово`);
+      console.log(`️ В примечании не найдено ни одно ключевое слово`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
   }
 }
 
-// 🆕 Regex-проверка наличия ключевого слова
 function hasPaymentKeyword(text) {
   const lower = text.toLowerCase();
   return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
@@ -288,9 +292,6 @@ export default {
       
       console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
 
-      // =========================
-      // 1. ДОБАВЛЕНО ПРИМЕЧАНИЕ
-      // =========================
       if (hasNotes) {
         const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
         const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
@@ -306,9 +307,6 @@ export default {
         return new Response("OK");
       }
 
-      // =========================
-      // 2. ОБНОВЛЕНИЕ ПОЛЕЙ
-      // =========================
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
@@ -371,9 +369,6 @@ export default {
         return new Response("OK");
       }
 
-      // =========================
-      // 3. СМЕНА СТАТУСА
-      // =========================
       if (!hasStatus) return new Response("OK");
 
       const leadId = Number(params.get("leads[status][0][id]"));
