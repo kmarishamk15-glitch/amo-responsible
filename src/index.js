@@ -29,8 +29,6 @@ const BUDGET_BU = { 972987: 2500, 981917: 1750, 981919: 1125, 972989: 1125, 9763
 const ACCESSORIES = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
 const HARDWARE_MODELS = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
 const ANDROID_MODELS = [975979, 976893];
-
-// ✅ ДОБАВЛЕНЫ НОВЫЕ МОДЕЛИ: iPhone 18 Pro Max, iPhone 18 Pro, iPhone 18, iPhone Duo
 const IPHONES = [
   975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
   976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015,
@@ -228,25 +226,63 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
+// 🆕 УМНЫЙ ПОИСК С ЖЕСТКИМ ПРИОРИТЕТОМ
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     const text = decodeURIComponent(noteText || "").toLowerCase();
-    console.log(` Обработка примечания: ID=${elementId}, type=${elementType}, текст="${noteText.substring(0, 80)}"`);
+    console.log(`📝 Обработка примечания: ID=${elementId}, текст="${noteText.substring(0, 80)}"`);
 
     if (!text) return;
 
     let enumId = null;
     let foundKey = "";
-    
-    for (const item of PAYMENT_KEYWORDS) {
-      for (const key of item.keys) {
-        if (matchesKeyword(text, key)) {
+    let reason = "";
+
+    // ШАГ 1: Ищем явное указание ИИ "Способ оплаты: [слово]"
+    // Это гарантирует, что мы берем именно итоговый вывод ИИ, игнорируя фразы типа "кредит не запрашивал"
+    const aiMatch = text.match(/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i);
+    if (aiMatch && aiMatch[1]) {
+      const word = aiMatch[1];
+      for (const item of PAYMENT_KEYWORDS) {
+        if (item.keys.some(k => word.includes(k))) {
           enumId = item.id;
-          foundKey = key;
+          foundKey = word;
+          reason = "ИИ (Способ оплаты)";
           break;
         }
       }
-      if (enumId) break;
+    }
+
+    // ШАГ 2: Ищем ручное переопределение менеджера "исключение [слово]"
+    // Это имеет АБСОЛЮТНЫЙ приоритет над ИИ
+    if (!enumId) {
+      const excMatch = text.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
+      if (excMatch && excMatch[1]) {
+        const word = excMatch[1];
+        for (const item of PAYMENT_KEYWORDS) {
+          if (item.keys.some(k => word.includes(k))) {
+            enumId = item.id;
+            foundKey = word;
+            reason = "Исключение (менеджер)";
+            break;
+          }
+        }
+      }
+    }
+
+    // ШАГ 3: Если явно не указано ни того, ни другого, ищем отдельные слова (fallback)
+    if (!enumId) {
+      for (const item of PAYMENT_KEYWORDS) {
+        for (const key of item.keys) {
+          if (matchesKeyword(text, key)) {
+            enumId = item.id;
+            foundKey = key;
+            reason = "Ключевое слово";
+            break;
+          }
+        }
+        if (enumId) break;
+      }
     }
 
     if (enumId) {
@@ -259,22 +295,28 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
       });
       
       if (res.ok) {
-        console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (найдено слово "${foundKey}")`);
+        console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason}: "${foundKey}")`);
       } else {
         const errText = await res.text();
         console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`️ В примечании не найдено ни одно ключевое слово`);
+      console.log(`⏭️ В примечании не найдено явного указания способа оплаты`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
   }
 }
 
+// 🆕 Обновленная проверка триггера
 function hasPaymentKeyword(text) {
   const lower = text.toLowerCase();
+  // Сначала проверяем явные фразы (самые надежные)
+  if (/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
+  if (/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
+  
+  // Потом проверяем отдельные слова
   return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
 }
 
