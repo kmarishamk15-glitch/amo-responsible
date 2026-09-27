@@ -226,7 +226,6 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-// 🆕 УМНЫЙ ПОИСК С ЖЕСТКИМ ПРИОРИТЕТОМ
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     const text = decodeURIComponent(noteText || "").toLowerCase();
@@ -238,8 +237,6 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
     let foundKey = "";
     let reason = "";
 
-    // ШАГ 1: Ищем явное указание ИИ "Способ оплаты: [слово]"
-    // Это гарантирует, что мы берем именно итоговый вывод ИИ, игнорируя фразы типа "кредит не запрашивал"
     const aiMatch = text.match(/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i);
     if (aiMatch && aiMatch[1]) {
       const word = aiMatch[1];
@@ -253,8 +250,6 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
       }
     }
 
-    // ШАГ 2: Ищем ручное переопределение менеджера "исключение [слово]"
-    // Это имеет АБСОЛЮТНЫЙ приоритет над ИИ
     if (!enumId) {
       const excMatch = text.match(/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i);
       if (excMatch && excMatch[1]) {
@@ -270,7 +265,6 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
       }
     }
 
-    // ШАГ 3: Если явно не указано ни того, ни другого, ищем отдельные слова (fallback)
     if (!enumId) {
       for (const item of PAYMENT_KEYWORDS) {
         for (const key of item.keys) {
@@ -302,21 +296,17 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`⏭️ В примечании не найдено явного указания способа оплаты`);
+      console.log(`️ В примечании не найдено явного указания способа оплаты`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
   }
 }
 
-// 🆕 Обновленная проверка триггера
 function hasPaymentKeyword(text) {
   const lower = text.toLowerCase();
-  // Сначала проверяем явные фразы (самые надежные)
   if (/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
   if (/исключени[ея]\s+(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
-  
-  // Потом проверяем отдельные слова
   return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
 }
 
@@ -340,7 +330,7 @@ export default {
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
-        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
+        console.log(` Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
         if (noteType === '4' && hasPaymentKeyword(noteText)) {
           ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
@@ -476,6 +466,35 @@ export default {
           patchPayload.responsible_user_id = userId;
           console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
+        
+        // 🆕 КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
+        if (newStatusId === 143 && type) {
+          let targetPipeline = null;
+          let reason = "";
+
+          if (type === 938315) {
+            targetPipeline = 5240944;
+            reason = "Нецелевой услуги (938315) → Услуги";
+          } else if (type === 982245) {
+            targetPipeline = 5240944;
+            reason = "Сущ гарантия услуги (982245) → Услуги";
+          } else if (type === 978137) {
+            targetPipeline = 5276629;
+            reason = "Нецелевой техника (978137) → Техника";
+          } else if (type === 931811) {
+            targetPipeline = 5276629;
+            reason = "Сущ гарантия техника (931811) → Техника";
+          }
+
+          if (targetPipeline && targetPipeline !== pipelineId) {
+            patchPayload.pipeline_id = targetPipeline;
+            patchPayload.status_id = 143;
+            console.log(`🔄 КОРРЕКТИРОВКА ВОРОНКИ: сделка ${leadId} → ${reason} (было pipeline=${pipelineId}, стало pipeline=${targetPipeline})`);
+          } else if (targetPipeline && targetPipeline === pipelineId) {
+            console.log(`✅ Воронка уже корректна для сделки ${leadId} (${reason})`);
+          }
+        }
+        
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
