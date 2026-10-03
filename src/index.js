@@ -465,13 +465,21 @@ export default {
         rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
       );
 
+      // 🔍 ДЕТАЛЬНАЯ ДИАГНОСТИКА СМЕНЫ ОТВЕТСТВЕННОГО
       if (matchedRule) {
+        console.log(`🔍 Правило сработало! oldPipeline=${oldPipelineId}, oldStatus=${oldStatusId} -> newPipeline=${pipelineId}, newStatus=${newStatusId}`);
+        console.log(`👤 Текущий ответственный: ${actualResponsibleId}, Тот кто двигал (userId): ${userId}`);
+
         if (userId && actualResponsibleId !== userId) {
           patchPayload.responsible_user_id = userId;
-          console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
+          console.log(`✅ Запланирована смена ответственного: сделка ${leadId} -> ${userId}`);
+        } else if (!userId) {
+          console.log(`⚠️ Не удалось определить userId из вебхука (modified_user_id или modified_by отсутствуют)`);
+        } else {
+          console.log(`⏭️ Ответственный не меняется (уже установлен как ${actualResponsibleId})`);
         }
         
-        // 🆕 КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
+        // КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
         if (newStatusId === 143 && type) {
           let targetPipeline = null;
           let reason = "";
@@ -500,9 +508,11 @@ export default {
         }
         
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
+      } else {
+        console.log(`⏭️ Правило НЕ сработало. oldPipeline=${oldPipelineId}, oldStatus=${oldStatusId}, newPipeline=${pipelineId}, newStatus=${newStatusId}`);
       }
 
-      // 🆕 СБРОС ДАТЫ СОЗДАНИЯ: теперь работает и для "Получен новый лид" (Услуги), и для "Получен новый лид техника" (Техника)
+      // СБРОС ДАТЫ СОЗДАНИЯ
       const isOldLeadServices = (oldPipelineId === 5240944 && oldStatusId === 47069740);
       const isOldLeadTech = (oldPipelineId === 5276629 && oldStatusId === 89068606);
       
@@ -515,16 +525,28 @@ export default {
 
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+        
+        // 🔍 ДИАГНОСТИКА ОТВЕТА AMOCRM
+        const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(patchPayload)
         });
+
+        if (!updateRes.ok) {
+          const errText = await updateRes.text();
+          console.log(`❌ ОШИБКА PATCH запроса: ${updateRes.status} - ${errText}`);
+        } else {
+          console.log(`✅ PATCH запрос успешно отправлен и принят amoCRM`);
+        }
+      } else {
+        console.log(`⏭️ Нечего обновлять (patchPayload пуст)`);
       }
 
       return new Response("OK");
 
     } catch (e) {
+      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
