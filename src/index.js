@@ -1,8 +1,6 @@
 const RULES = [
   { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
-  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } },
-  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
-  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5240944, status: [143] } }
+  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } }
 ];
 
 const RESPONSIBLE_USER_NAMES = {
@@ -294,11 +292,11 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason}: "${foundKey}")`);
       } else {
         const errText = await res.text();
-        console.log(` ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
+        console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`⏭️ В примечании не найдено явного указания способа оплаты`);
+      console.log(`️ В примечании не найдено явного указания способа оплаты`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
@@ -332,7 +330,7 @@ export default {
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
-        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
+        console.log(` Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
         if (noteType === '4' && hasPaymentKeyword(noteText)) {
           ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
@@ -409,7 +407,7 @@ export default {
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || pipelineId;
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
@@ -469,6 +467,7 @@ export default {
           console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
         
+        // 🆕 КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
         if (newStatusId === 143 && type) {
           let targetPipeline = null;
           let reason = "";
@@ -499,10 +498,7 @@ export default {
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
-      const isOldLeadServices = (oldPipelineId === 5240944 && oldStatusId === 47069740);
-      const isOldLeadTech = (oldPipelineId === 5276629 && oldStatusId === 89068606);
-      
-      if ((isOldLeadServices || isOldLeadTech) && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
 
@@ -525,3 +521,4 @@ export default {
     }
   }
 };
+
