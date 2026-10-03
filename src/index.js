@@ -1,6 +1,10 @@
 const RULES = [
+  // Из Услуги (Получен новый лид)
   { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
-  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } }
+  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } },
+  // Из Техники (Получен новый лид техника)
+  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
+  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5240944, status: [143] } }
 ];
 
 const RESPONSIBLE_USER_NAMES = {
@@ -296,7 +300,7 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`️ В примечании не найдено явного указания способа оплаты`);
+      console.log(`⏭️ В примечании не найдено явного указания способа оплаты`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
@@ -330,7 +334,7 @@ export default {
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
-        console.log(` Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
+        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
         if (noteType === '4' && hasPaymentKeyword(noteText)) {
           ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
@@ -498,7 +502,11 @@ export default {
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
-      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+      // 🆕 СБРОС ДАТЫ СОЗДАНИЯ: теперь работает и для "Получен новый лид" (Услуги), и для "Получен новый лид техника" (Техника)
+      const isOldLeadServices = (oldPipelineId === 5240944 && oldStatusId === 47069740);
+      const isOldLeadTech = (oldPipelineId === 5276629 && oldStatusId === 89068606);
+      
+      if ((isOldLeadServices || isOldLeadTech) && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
 
