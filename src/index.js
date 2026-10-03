@@ -334,9 +334,12 @@ export default {
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
+        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
+        
         if (noteType === '4' && hasPaymentKeyword(noteText)) {
           ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
         }
+        
         return new Response("OK");
       }
 
@@ -398,6 +401,7 @@ export default {
             body: JSON.stringify(patchBody)
           });
         }
+
         return new Response("OK");
       }
 
@@ -407,11 +411,7 @@ export default {
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      
-      // 🛠️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: если old_pipeline_id не пришёл (сделка двигалась внутри одной воронки), 
-      // считаем, что он равен текущей воронке (pipelineId), а не 5240944!
-      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || pipelineId;
-      
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
@@ -466,37 +466,43 @@ export default {
       );
 
       if (matchedRule) {
-        console.log(`🔍 Правило сработало! oldPipeline=${oldPipelineId}, oldStatus=${oldStatusId} -> newPipeline=${pipelineId}, newStatus=${newStatusId}`);
-        console.log(`👤 Текущий ответственный: ${actualResponsibleId}, Тот кто двигал (userId): ${userId}`);
-
         if (userId && actualResponsibleId !== userId) {
           patchPayload.responsible_user_id = userId;
-          console.log(`✅ Запланирована смена ответственного: сделка ${leadId} -> ${userId}`);
-        } else if (!userId) {
-          console.log(`⚠️ Не удалось определить userId из вебхука`);
-        } else {
-          console.log(`⏭️ Ответственный не меняется (уже установлен как ${actualResponsibleId})`);
+          console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
         
+        // 🆕 КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
         if (newStatusId === 143 && type) {
           let targetPipeline = null;
           let reason = "";
-          if (type === 938315) { targetPipeline = 5240944; reason = "Нецелевой услуги (938315) → Услуги"; } 
-          else if (type === 982245) { targetPipeline = 5240944; reason = "Сущ гарантия услуги (982245) → Услуги"; } 
-          else if (type === 978137) { targetPipeline = 5276629; reason = "Нецелевой техника (978137) → Техника"; } 
-          else if (type === 931811) { targetPipeline = 5276629; reason = "Сущ гарантия техника (931811) → Техника"; }
+
+          if (type === 938315) {
+            targetPipeline = 5240944;
+            reason = "Нецелевой услуги (938315) → Услуги";
+          } else if (type === 982245) {
+            targetPipeline = 5240944;
+            reason = "Сущ гарантия услуги (982245) → Услуги";
+          } else if (type === 978137) {
+            targetPipeline = 5276629;
+            reason = "Нецелевой техника (978137) → Техника";
+          } else if (type === 931811) {
+            targetPipeline = 5276629;
+            reason = "Сущ гарантия техника (931811) → Техника";
+          }
 
           if (targetPipeline && targetPipeline !== pipelineId) {
             patchPayload.pipeline_id = targetPipeline;
             patchPayload.status_id = 143;
-            console.log(`🔄 КОРРЕКТИРОВКА ВОРОНКИ: сделка ${leadId} → ${reason}`);
+            console.log(`🔄 КОРРЕКТИРОВКА ВОРОНКИ: сделка ${leadId} → ${reason} (было pipeline=${pipelineId}, стало pipeline=${targetPipeline})`);
+          } else if (targetPipeline && targetPipeline === pipelineId) {
+            console.log(`✅ Воронка уже корректна для сделки ${leadId} (${reason})`);
           }
         }
+        
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
-      } else {
-        console.log(`⏭️ Правило НЕ сработало. oldPipeline=${oldPipelineId}, oldStatus=${oldStatusId}, newPipeline=${pipelineId}, newStatus=${newStatusId}`);
       }
 
+      // 🆕 СБРОС ДАТЫ СОЗДАНИЯ: теперь работает и для "Получен новый лид" (Услуги), и для "Получен новый лид техника" (Техника)
       const isOldLeadServices = (oldPipelineId === 5240944 && oldStatusId === 47069740);
       const isOldLeadTech = (oldPipelineId === 5276629 && oldStatusId === 89068606);
       
@@ -509,25 +515,16 @@ export default {
 
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-        
-        const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
           method: "PATCH",
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(patchPayload)
         });
-
-        if (!updateRes.ok) {
-          console.log(`❌ ОШИБКА PATCH: ${updateRes.status} - ${await updateRes.text()}`);
-        } else {
-          console.log(`✅ PATCH успешно отправлен`);
-        }
-      } else {
-        console.log(`⏭️ Нечего обновлять (patchPayload пуст)`);
       }
 
       return new Response("OK");
+
     } catch (e) {
-      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
