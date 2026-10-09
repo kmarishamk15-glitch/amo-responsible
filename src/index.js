@@ -1,6 +1,8 @@
 const RULES = [
   { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
-  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } }
+  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } },
+  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
+  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5240944, status: [143] } }
 ];
 
 const RESPONSIBLE_USER_NAMES = {
@@ -226,14 +228,17 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-// 🆕 НОВАЯ ФУНКЦИЯ: Добавление тега "корзина" без удаления старых
 async function addCartTagIfPresent(leadId, noteText, env) {
-  if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
+  console.log(`🔍 ПРОВЕРКА ТЕГА: leadId=${leadId}, текст="${noteText.substring(0, 50)}..."`);
+  
+  if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) {
+    console.log(`⏭️ Фраза "ЗАКАЗ ИЗ КОРЗИНЫ" не найдена`);
+    return;
+  }
   
   console.log(`🛒 Найден "ЗАКАЗ ИЗ КОРЗИНЫ" в примечании сделки ${leadId}`);
   
   try {
-    // 1. Получаем текущие данные сделки, чтобы сохранить существующие теги
     const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
       headers: { 
         Authorization: `Bearer ${env.AMO_TOKEN}`, 
@@ -241,17 +246,21 @@ async function addCartTagIfPresent(leadId, noteText, env) {
       }
     });
     
+    console.log(`📥 Ответ API (GET): статус ${leadRes.status}`);
+    
     if (leadRes.ok) {
       const lead = await safeJsonParse(leadRes);
       if (lead) {
         const existingTags = lead.tags || [];
         const cartTagId = 415953;
         
-        // 2. Проверяем, нет ли уже этого тега
+        console.log(`🏷️ Текущие теги сделки: [${existingTags.join(', ')}]`);
+        
         if (!existingTags.includes(cartTagId)) {
           const newTags = [...existingTags, cartTagId];
           
-          // 3. Обновляем сделку с новым массивом тегов
+          console.log(`📤 PATCH запрос: добавляем тег ${cartTagId}. Новые теги: [${newTags.join(', ')}]`);
+          
           const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
             method: "PATCH",
             headers: { 
@@ -261,24 +270,32 @@ async function addCartTagIfPresent(leadId, noteText, env) {
             body: JSON.stringify({ tags: newTags })
           });
           
+          console.log(`📥 Ответ на PATCH: статус ${updateRes.status}`);
+          
           if (updateRes.ok) {
-            console.log(`✅ Тег "корзина" (${cartTagId}) успешно добавлен к сделке ${leadId}`);
+            console.log(`✅ УСПЕХ! Тег "корзина" (${cartTagId}) успешно добавлен к сделке ${leadId}`);
           } else {
-            console.log(`❌ Ошибка добавления тега: ${updateRes.status} - ${await updateRes.text()}`);
+            const errText = await updateRes.text();
+            console.log(`❌ ОШИБКА добавления тега: ${updateRes.status}`);
+            console.log(`   Текст ошибки: ${errText.substring(0, 300)}`);
           }
         } else {
-          console.log(`⏭️ Тег "корзина" уже присутствует у сделки ${leadId}`);
+          console.log(`⏭️ Тег "корзина" (${cartTagId}) уже присутствует у сделки ${leadId}`);
         }
+      } else {
+        console.log(`❌ Не удалось распарсить ответ от API (lead = null)`);
       }
+    } else {
+      const errText = await leadRes.text();
+      console.log(`❌ ОШИБКА GET запроса: ${leadRes.status} - ${errText.substring(0, 200)}`);
     }
   } catch (e) {
-    console.log(`❌ Ошибка при обработке тега корзины: ${e.message}`);
+    console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА в addCartTagIfPresent: ${e.message}`);
   }
 }
 
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
-    // 🛡️ ЗАЩИТА ОТ ОШИБКИ "URI malformed"
     let text = "";
     try { text = decodeURIComponent(noteText || "").toLowerCase(); }
     catch (e) { text = (noteText || "").toLowerCase(); }
@@ -386,11 +403,10 @@ export default {
         
         console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        if (noteType === '4') {
-          // 🆕 Запускаем проверку на "ЗАКАЗ ИЗ КОРЗИНЫ" и добавление тега
+        // ✅ ИСПРАВЛЕНО: Добавлена поддержка note_type 10 и 109 (интеграции/сайт)
+        if (noteType === '4' || noteType === '10' || noteType === '109') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           
-          // Запускаем проверку способа оплаты
           if (hasPaymentKeyword(noteText)) {
             ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
           }
@@ -467,7 +483,8 @@ export default {
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+      // ✅ ИСПРАВЛЕНО: fallback на pipelineId, если old_pipeline_id не пришел
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || pipelineId;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
@@ -557,7 +574,10 @@ export default {
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
-      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+      const isOldLeadServices = (oldPipelineId === 5240944 && oldStatusId === 47069740);
+      const isOldLeadTech = (oldPipelineId === 5276629 && oldStatusId === 89068606);
+      
+      if ((isOldLeadServices || isOldLeadTech) && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
 
@@ -576,6 +596,7 @@ export default {
       return new Response("OK");
 
     } catch (e) {
+      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
