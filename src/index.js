@@ -1,8 +1,6 @@
 const RULES = [
   { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
-  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } },
-  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
-  { from: { pipeline: 5276629, status: 89068606 }, to: { pipeline: 5240944, status: [143] } }
+  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } }
 ];
 
 const RESPONSIBLE_USER_NAMES = {
@@ -228,79 +226,9 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-async function addCartTagIfPresent(leadId, noteText, env) {
-  console.log(`🔍 ПРОВЕРКА ТЕГА: leadId=${leadId}, текст="${noteText.substring(0, 50)}..."`);
-  
-  if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) {
-    console.log(`⏭️ Фраза "ЗАКАЗ ИЗ КОРЗИНЫ" не найдена`);
-    return;
-  }
-  
-  console.log(`🛒 Найден "ЗАКАЗ ИЗ КОРЗИНЫ" в примечании сделки ${leadId}`);
-  
-  try {
-    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-      headers: { 
-        Authorization: `Bearer ${env.AMO_TOKEN}`, 
-        Accept: "application/json" 
-      }
-    });
-    
-    console.log(` Ответ API (GET): статус ${leadRes.status}`);
-    
-    if (leadRes.ok) {
-      const lead = await safeJsonParse(leadRes);
-      if (lead) {
-        const existingTags = lead.tags || [];
-        const cartTagId = 415953;
-        
-        console.log(`🏷️ Текущие теги сделки: [${existingTags.join(', ')}]`);
-        
-        if (!existingTags.includes(cartTagId)) {
-          // 🛠️ ИСПРАВЛЕНИЕ: amoCRM v4 требует массив объектов { id: ... }, а не массив чисел
-          const newTags = [...existingTags.map(id => ({ id })), { id: cartTagId }];
-          
-          console.log(`📤 PATCH запрос: добавляем тег ${cartTagId}. Новые теги:`, JSON.stringify(newTags));
-          
-          const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            method: "PATCH",
-            headers: { 
-              Authorization: `Bearer ${env.AMO_TOKEN}`, 
-              "Content-Type": "application/json" 
-            },
-            body: JSON.stringify({ tags: newTags })
-          });
-          
-          console.log(`📥 Ответ на PATCH: статус ${updateRes.status}`);
-          
-          if (updateRes.ok) {
-            console.log(`✅ УСПЕХ! Тег "корзина" (${cartTagId}) успешно добавлен к сделке ${leadId}`);
-          } else {
-            const errText = await updateRes.text();
-            console.log(`❌ ОШИБКА добавления тега: ${updateRes.status}`);
-            console.log(`   Текст ошибки: ${errText.substring(0, 300)}`);
-          }
-        } else {
-          console.log(`⏭️ Тег "корзина" (${cartTagId}) уже присутствует у сделки ${leadId}`);
-        }
-      } else {
-        console.log(`❌ Не удалось распарсить ответ от API (lead = null)`);
-      }
-    } else {
-      const errText = await leadRes.text();
-      console.log(`❌ ОШИБКА GET запроса: ${leadRes.status} - ${errText.substring(0, 200)}`);
-    }
-  } catch (e) {
-    console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА в addCartTagIfPresent: ${e.message}`);
-  }
-}
-
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
-    let text = "";
-    try { text = decodeURIComponent(noteText || "").toLowerCase(); }
-    catch (e) { text = (noteText || "").toLowerCase(); }
-    
+    const text = decodeURIComponent(noteText || "").toLowerCase();
     console.log(`📝 Обработка примечания: ID=${elementId}, текст="${noteText.substring(0, 80)}"`);
 
     if (!text) return;
@@ -364,11 +292,11 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason}: "${foundKey}")`);
       } else {
         const errText = await res.text();
-        console.log(` ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
+        console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`⏭️ В примечании не найдено явного указания способа оплаты`);
+      console.log(`️ В примечании не найдено явного указания способа оплаты`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
@@ -402,14 +330,10 @@ export default {
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
-        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
+        console.log(` Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        if (noteType === '4' || noteType === '10' || noteType === '109') {
-          ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
-          
-          if (hasPaymentKeyword(noteText)) {
-            ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
-          }
+        if (noteType === '4' && hasPaymentKeyword(noteText)) {
+          ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
         }
         
         return new Response("OK");
@@ -483,7 +407,7 @@ export default {
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || pipelineId;
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
       if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
@@ -543,6 +467,7 @@ export default {
           console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
         
+        // 🆕 КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
         if (newStatusId === 143 && type) {
           let targetPipeline = null;
           let reason = "";
@@ -573,10 +498,7 @@ export default {
         ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
-      const isOldLeadServices = (oldPipelineId === 5240944 && oldStatusId === 47069740);
-      const isOldLeadTech = (oldPipelineId === 5276629 && oldStatusId === 89068606);
-      
-      if ((isOldLeadServices || isOldLeadTech) && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
 
@@ -595,7 +517,6 @@ export default {
       return new Response("OK");
 
     } catch (e) {
-      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
