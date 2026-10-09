@@ -246,7 +246,7 @@ async function addCartTagIfPresent(leadId, noteText, env) {
       }
     });
     
-    console.log(`📥 Ответ API (GET): статус ${leadRes.status}`);
+    console.log(` Ответ API (GET): статус ${leadRes.status}`);
     
     if (leadRes.ok) {
       const lead = await safeJsonParse(leadRes);
@@ -257,9 +257,10 @@ async function addCartTagIfPresent(leadId, noteText, env) {
         console.log(`🏷️ Текущие теги сделки: [${existingTags.join(', ')}]`);
         
         if (!existingTags.includes(cartTagId)) {
-          const newTags = [...existingTags, cartTagId];
+          // 🛠️ ИСПРАВЛЕНИЕ: amoCRM v4 требует массив объектов { id: ... }, а не массив чисел
+          const newTags = [...existingTags.map(id => ({ id })), { id: cartTagId }];
           
-          console.log(`📤 PATCH запрос: добавляем тег ${cartTagId}. Новые теги: [${newTags.join(', ')}]`);
+          console.log(`📤 PATCH запрос: добавляем тег ${cartTagId}. Новые теги:`, JSON.stringify(newTags));
           
           const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
             method: "PATCH",
@@ -363,7 +364,7 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason}: "${foundKey}")`);
       } else {
         const errText = await res.text();
-        console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
+        console.log(` ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
@@ -403,7 +404,6 @@ export default {
         
         console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        // ✅ ИСПРАВЛЕНО: Добавлена поддержка note_type 10 и 109 (интеграции/сайт)
         if (noteType === '4' || noteType === '10' || noteType === '109') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           
@@ -483,7 +483,6 @@ export default {
       const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
       const newStatusId = Number(params.get("leads[status][0][status_id]"));
       const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      // ✅ ИСПРАВЛЕНО: fallback на pipelineId, если old_pipeline_id не пришел
       const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || pipelineId;
       const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
