@@ -226,51 +226,30 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
-// 🆕 ДОБАВЛЕНА ФУНКЦИЯ ДЛЯ ТЕГА КОРЗИНЫ
+// 🆕 ИСПРАВЛЕННАЯ ФУНКЦИЯ: используем официальный tags_to_add
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
   
   console.log(`🛒 Найден "ЗАКАЗ ИЗ КОРЗИНЫ" в примечании сделки ${leadId}`);
   
   try {
-    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+    // Отправляем запрос с tags_to_add, как рекомендует документация amoCRM
+    const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      method: "PATCH",
       headers: { 
         Authorization: `Bearer ${env.AMO_TOKEN}`, 
-        Accept: "application/json" 
-      }
+        "Content-Type": "application/json" 
+      },
+      body: JSON.stringify({ 
+        tags_to_add: [{ id: 415953 }] 
+      })
     });
     
-    if (leadRes.ok) {
-      const lead = await safeJsonParse(leadRes);
-      if (lead) {
-        const existingTags = lead.tags || [];
-        const cartTagId = 415953;
-        
-        if (!existingTags.includes(cartTagId)) {
-          // Формируем массив объектов, как строго требует amoCRM API v4
-          const newTags = [...existingTags.map(id => ({ id: id })), { id: cartTagId }];
-          
-          console.log(`📤 PATCH запрос: добавляем тег ${cartTagId}. Новые теги:`, JSON.stringify(newTags));
-          
-          const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            method: "PATCH",
-            headers: { 
-              Authorization: `Bearer ${env.AMO_TOKEN}`, 
-              "Content-Type": "application/json" 
-            },
-            body: JSON.stringify({ tags: newTags })
-          });
-          
-          if (updateRes.ok) {
-            console.log(`✅ УСПЕХ! Тег "корзина" (${cartTagId}) успешно добавлен к сделке ${leadId}`);
-          } else {
-            const errText = await updateRes.text();
-            console.log(`❌ ОШИБКА добавления тега: ${updateRes.status} - ${errText.substring(0, 300)}`);
-          }
-        } else {
-          console.log(`⏭️ Тег "корзина" уже есть у сделки ${leadId}`);
-        }
-      }
+    if (updateRes.ok) {
+      console.log(`✅ УСПЕХ! Тег "корзина" (415953) успешно добавлен через tags_to_add к сделке ${leadId}`);
+    } else {
+      const errText = await updateRes.text();
+      console.log(`❌ ОШИБКА добавления тега: ${updateRes.status} - ${errText.substring(0, 300)}`);
     }
   } catch (e) {
     console.log(`❌ Ошибка при обработке тега корзины: ${e.message}`);
@@ -386,12 +365,9 @@ export default {
         
         console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        // 🆕 Расширили проверку на noteType 10 и 109 (интеграции/сайт)
         if (noteType === '4' || noteType === '10' || noteType === '109') {
-          // 1. Добавляем тег корзины
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           
-          // 2. Проверяем способ оплаты
           if (hasPaymentKeyword(noteText)) {
             ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
           }
