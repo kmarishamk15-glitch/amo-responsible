@@ -11,8 +11,6 @@ const RESPONSIBLE_USER_NAMES = {
   14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина"
 };
 
-
-
 const CORRECTION_FIELD_NAMES = {
   983501: "Александра Абрамова", 983503: "Анна Зернова", 983505: "Максим Булыков",
   983507: "Мария Смирнова", 983509: "Марк Артыков", 983511: "Илья Буланов",
@@ -228,9 +226,63 @@ async function checkDuplicatesInBackground(leadId, env) {
   } catch (e) { /* Игнорируем */ }
 }
 
+// 🆕 НОВАЯ ФУНКЦИЯ: Добавление тега "корзина" без удаления старых
+async function addCartTagIfPresent(leadId, noteText, env) {
+  if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
+  
+  console.log(`🛒 Найден "ЗАКАЗ ИЗ КОРЗИНЫ" в примечании сделки ${leadId}`);
+  
+  try {
+    // 1. Получаем текущие данные сделки, чтобы сохранить существующие теги
+    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      headers: { 
+        Authorization: `Bearer ${env.AMO_TOKEN}`, 
+        Accept: "application/json" 
+      }
+    });
+    
+    if (leadRes.ok) {
+      const lead = await safeJsonParse(leadRes);
+      if (lead) {
+        const existingTags = lead.tags || [];
+        const cartTagId = 415953;
+        
+        // 2. Проверяем, нет ли уже этого тега
+        if (!existingTags.includes(cartTagId)) {
+          const newTags = [...existingTags, cartTagId];
+          
+          // 3. Обновляем сделку с новым массивом тегов
+          const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+            method: "PATCH",
+            headers: { 
+              Authorization: `Bearer ${env.AMO_TOKEN}`, 
+              "Content-Type": "application/json" 
+            },
+            body: JSON.stringify({ tags: newTags })
+          });
+          
+          if (updateRes.ok) {
+            console.log(`✅ Тег "корзина" (${cartTagId}) успешно добавлен к сделке ${leadId}`);
+          } else {
+            console.log(`❌ Ошибка добавления тега: ${updateRes.status} - ${await updateRes.text()}`);
+          }
+        } else {
+          console.log(`⏭️ Тег "корзина" уже присутствует у сделки ${leadId}`);
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`❌ Ошибка при обработке тега корзины: ${e.message}`);
+  }
+}
+
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
-    const text = decodeURIComponent(noteText || "").toLowerCase();
+    // 🛡️ ЗАЩИТА ОТ ОШИБКИ "URI malformed"
+    let text = "";
+    try { text = decodeURIComponent(noteText || "").toLowerCase(); }
+    catch (e) { text = (noteText || "").toLowerCase(); }
+    
     console.log(`📝 Обработка примечания: ID=${elementId}, текст="${noteText.substring(0, 80)}"`);
 
     if (!text) return;
@@ -298,7 +350,7 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         console.log(`   Ответ amoCRM: ${errText.substring(0, 250)}`);
       }
     } else {
-      console.log(`️ В примечании не найдено явного указания способа оплаты`);
+      console.log(`⏭️ В примечании не найдено явного указания способа оплаты`);
     }
   } catch (e) {
     console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`);
@@ -332,10 +384,16 @@ export default {
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
-        console.log(` Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
+        console.log(`📝 Детали: element_id=${elementId}, type=${elementType}, note_type=${noteType}`);
         
-        if (noteType === '4' && hasPaymentKeyword(noteText)) {
-          ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
+        if (noteType === '4') {
+          // 🆕 Запускаем проверку на "ЗАКАЗ ИЗ КОРЗИНЫ" и добавление тега
+          ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
+          
+          // Запускаем проверку способа оплаты
+          if (hasPaymentKeyword(noteText)) {
+            ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
+          }
         }
         
         return new Response("OK");
@@ -469,7 +527,6 @@ export default {
           console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
         
-        // 🆕 КОРРЕКТИРОВКА ВОРОНКИ ПО ТИПУ ЗАПРОСА (только для этапа 143)
         if (newStatusId === 143 && type) {
           let targetPipeline = null;
           let reason = "";
@@ -523,4 +580,3 @@ export default {
     }
   }
 };
-
