@@ -199,6 +199,14 @@ async function checkDuplicatesInBackground(leadId, env) {
     }
     if (!phone || phone.length !== 11) return;
 
+    // 🛑 НОВОЕ УСЛОВИЕ: Проверка дубликатов и перевод в "Сущ" ТОЛЬКО для тестового номера
+    if (phone !== '79991409013') {
+      console.log(`⏭️ Пропуск проверки дублей: номер ${phone} не является тестовым (79991409013)`);
+      return;
+    }
+
+    console.log(`🧪 ТЕСТОВЫЙ РЕЖИМ: Найден тестовый номер ${phone}, запускаем проверку на дубли...`);
+
     await new Promise(r => setTimeout(r, 300)); 
     const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
     if (!searchLeadsRes.ok) return;
@@ -219,21 +227,22 @@ async function checkDuplicatesInBackground(leadId, env) {
           headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
           body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_REQUEST_TYPE, values: [{ enum_id: NEW_TYPE_VALUE }] }] })
         });
-        console.log(`✅ Дубль: сделка ${leadId} переведена в Сущ`);
+        console.log(`✅ ТЕСТ УСПЕШЕН: Дубль найден, сделка ${leadId} переведена в Сущ`);
         return;
       }
     }
-  } catch (e) { /* Игнорируем */ }
+    console.log(`⏭️ ТЕСТ: Дубликатов за 31 день не найдено для номера ${phone}`);
+  } catch (e) { 
+    console.log(`❌ Ошибка в checkDuplicatesInBackground: ${e.message}`);
+  }
 }
 
-// 🆕 ИСПРАВЛЕННАЯ ФУНКЦИЯ: используем официальный tags_to_add
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
   
   console.log(`🛒 Найден "ЗАКАЗ ИЗ КОРЗИНЫ" в примечании сделки ${leadId}`);
   
   try {
-    // Отправляем запрос с tags_to_add, как рекомендует документация amoCRM
     const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
       method: "PATCH",
       headers: { 
@@ -323,6 +332,8 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
       
       if (res.ok) {
         console.log(`✅ УСПЕХ! Сделка ${elementId} → способ оплаты ${enumId} (${reason}: "${foundKey}")`);
+      } else if (res.status === 403) {
+        console.log(`⚠️ ПРОПУСК: Нет прав на изменение поля "Способ оплаты" (403 Forbidden).`);
       } else {
         const errText = await res.text();
         console.log(`❌ ОШИБКА при обновлении сделки ${elementId}: HTTP ${res.status}`);
@@ -553,6 +564,7 @@ export default {
       return new Response("OK");
 
     } catch (e) {
+      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
