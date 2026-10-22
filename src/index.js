@@ -165,78 +165,6 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
-async function checkDuplicatesInBackground(leadId, env) {
-  try {
-    await new Promise(r => setTimeout(r, 400)); 
-    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=contacts`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-    if (!leadRes.ok) return;
-    const lead = await safeJsonParse(leadRes);
-    if (!lead) return;
-
-    let phone = null;
-    if (lead._embedded?.contacts?.length > 0) {
-      await new Promise(r => setTimeout(r, 300)); 
-      const contactRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/contacts/${lead._embedded.contacts[0].id}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-      if (contactRes.ok) {
-        const contact = await safeJsonParse(contactRes);
-        if (contact) {
-          const targetPhoneId = env.PHONE_FIELD_ID ? Number(env.PHONE_FIELD_ID) : 7;
-          let phoneField = contact.custom_fields_values?.find(f => f.field_id === targetPhoneId);
-          if (!phoneField?.values?.length) {
-            phoneField = contact.custom_fields_values?.find(f => {
-              const val = f.values?.[0]?.value;
-              if (!val) return false;
-              const digits = val.replace(/\D/g, '');
-              return digits.length === 11 && (digits.startsWith('7') || digits.startsWith('8'));
-            });
-          }
-          if (phoneField?.values?.length) {
-            phone = phoneField.values[0].value.replace(/\D/g, '');
-            if (phone.startsWith('8') && phone.length === 11) phone = '7' + phone.slice(1);
-          }
-        }
-      }
-    }
-    if (!phone || phone.length !== 11) return;
-
-    // 🛑 НОВОЕ УСЛОВИЕ: Проверка дубликатов и перевод в "Сущ" ТОЛЬКО для тестового номера
-    if (phone !== '79991409013') {
-      console.log(`⏭️ Пропуск проверки дублей: номер ${phone} не является тестовым (79991409013)`);
-      return;
-    }
-
-    console.log(`🧪 ТЕСТОВЫЙ РЕЖИМ: Найден тестовый номер ${phone}, запускаем проверку на дубли...`);
-
-    await new Promise(r => setTimeout(r, 300)); 
-    const searchLeadsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads?query=${phone}&filter[pipeline_id]=${TARGET_PIPELINE_OLD}&filter[status_id]=${TARGET_STATUS_OLD}&with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-    if (!searchLeadsRes.ok) return;
-    const searchLeadsData = await safeJsonParse(searchLeadsRes);
-    if (!searchLeadsData) return;
-
-    const foundLeads = searchLeadsData._embedded?.leads || [];
-    const cutoffDate = Math.floor((Date.now() - 31 * 24 * 60 * 60 * 1000) / 1000);
-
-    for (const oldLead of foundLeads) {
-      if (oldLead.id === leadId || oldLead.created_at < cutoffDate) continue;
-      const reqTypeField = oldLead.custom_fields_values?.find(f => f.field_id === FIELD_REQUEST_TYPE);
-      const currentType = reqTypeField?.values?.[0]?.enum_id;
-      if (ALLOWED_OLD_TYPES.includes(currentType)) {
-        await new Promise(r => setTimeout(r, 300)); 
-        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_REQUEST_TYPE, values: [{ enum_id: NEW_TYPE_VALUE }] }] })
-        });
-        console.log(`✅ ТЕСТ УСПЕШЕН: Дубль найден, сделка ${leadId} переведена в Сущ`);
-        return;
-      }
-    }
-    console.log(`⏭️ ТЕСТ: Дубликатов за 31 день не найдено для номера ${phone}`);
-  } catch (e) { 
-    console.log(`❌ Ошибка в checkDuplicatesInBackground: ${e.message}`);
-  }
-}
-
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
   
@@ -502,6 +430,11 @@ export default {
 
       if (pipelineId === 5276629 && newStatusId === 143) {
         customFieldsUpdates.push(...processStatus143Logic(fields));
+        
+        // 🆕 ОЧИСТКА ПОЛЕЙ ПРИ ПЕРЕХОДЕ НА 143 В ТЕХНИКЕ
+        customFieldsUpdates.push({ field_id: 573459, values: null }); // Дата оплаты
+        customFieldsUpdates.push({ field_id: 578879, values: null }); // Предоплата
+        patchPayload.price = 0; // Очистка бюджета (системное поле amoCRM)
       }
 
       const matchedRule = RULES.find(rule =>
@@ -541,10 +474,9 @@ export default {
             console.log(`✅ Воронка уже корректна для сделки ${leadId} (${reason})`);
           }
         }
-        
-        ctx.waitUntil(checkDuplicatesInBackground(leadId, env));
       }
 
+      // Сохраняем сброс даты создания только для перехода из Услуг (47069740) в Технику
       if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
