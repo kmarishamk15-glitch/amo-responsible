@@ -47,6 +47,8 @@ const NEW_TYPE_VALUE = 931811;
 
 const FIELD_PAYMENT_METHOD = 574905;
 
+const TAG_15_MIN_ID = 445119;
+
 const PAYMENT_KEYWORDS = [
   { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
   { keys: ['кредит', 'кредитом', 'кредиту', 'кредите'], id: 973117 },
@@ -189,7 +191,113 @@ async function addCartTagIfPresent(leadId, noteText, env) {
       console.log(`❌ ОШИБКА добавления тега: ${updateRes.status} - ${errText.substring(0, 300)}`);
     }
   } catch (e) {
-    console.log(`❌ Ошибка при обработке тега корзины: ${e.message}`);
+    console.log(` Ошибка при обработке тега корзины: ${e.message}`);
+  }
+}
+
+async function add15MinTagIfPresent(leadId, noteText, env) {
+  if (!noteText.includes("Предзаявка с корзины")) return;
+  
+  console.log(`🛒 Найден "Предзаявка с корзины" в примечании сделки ${leadId}, добавляем тег 15 мин`);
+  
+  try {
+    const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      method: "PATCH",
+      headers: { 
+        Authorization: `Bearer ${env.AMO_TOKEN}`, 
+        "Content-Type": "application/json" 
+      },
+      body: JSON.stringify({ 
+        tags_to_add: [{ id: TAG_15_MIN_ID }] 
+      })
+    });
+    
+    if (updateRes.ok) {
+      console.log(`✅ УСПЕХ! Тег "15 мин" (${TAG_15_MIN_ID}) успешно добавлен к сделке ${leadId}`);
+    } else {
+      const errText = await updateRes.text();
+      console.log(`❌ ОШИБКА добавления тега 15 мин: ${updateRes.status} - ${errText.substring(0, 300)}`);
+    }
+  } catch (e) {
+    console.log(`❌ Ошибка при обработке тега 15 мин: ${e.message}`);
+  }
+}
+
+async function checkAndRemove15MinTag(leadId, env) {
+  try {
+    // Получаем сделку с тегами
+    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      headers: { 
+        Authorization: `Bearer ${env.AMO_TOKEN}`, 
+        Accept: "application/json" 
+      }
+    });
+    
+    if (!leadRes.ok) return;
+    
+    const lead = await safeJsonParse(leadRes);
+    if (!lead) return;
+    
+    const tags = lead.tags || [];
+    const has15MinTag = tags.some(tag => tag.id === TAG_15_MIN_ID);
+    
+    if (!has15MinTag) return;
+    
+    console.log(`🔍 Сделка ${leadId} имеет тег 15 мин, проверяем звонки...`);
+    
+    // Получаем историю сделки
+    const historyRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/history`, {
+      headers: { 
+        Authorization: `Bearer ${env.AMO_TOKEN}`, 
+        Accept: "application/json" 
+      }
+    });
+    
+    if (!historyRes.ok) return;
+    
+    const historyData = await safeJsonParse(historyRes);
+    if (!historyData || !historyData._embedded || !historyData._embedded.events) return;
+    
+    const events = historyData._embedded.events;
+    
+    // Ищем звонки дольше 10 секунд
+    const hasLongCall = events.some(event => {
+      const isCall = event.type === 'call' || 
+                     event.type === 'incoming_call' || 
+                     event.type === 'outgoing_call' ||
+                     (event.note_type && (event.note_type === '12' || event.note_type === '13'));
+      
+      if (!isCall) return false;
+      
+      const duration = event.duration || event.params?.duration || 0;
+      return duration > 10;
+    });
+    
+    if (hasLongCall) {
+      console.log(`📞 Найден звонок дольше 10 сек, удаляем тег 15 мин из сделки ${leadId}`);
+      
+      const removeRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+        method: "PATCH",
+        headers: { 
+          Authorization: `Bearer ${env.AMO_TOKEN}`, 
+          "Content-Type": "application/json" 
+        },
+        body: JSON.stringify({ 
+          tags_to_delete: [{ id: TAG_15_MIN_ID }] 
+        })
+      });
+      
+      if (removeRes.ok) {
+        console.log(`✅ Тег 15 мин успешно удален из сделки ${leadId}`);
+      } else {
+        const errText = await removeRes.text();
+        console.log(`❌ Ошибка удаления тега 15 мин: ${removeRes.status} - ${errText.substring(0, 300)}`);
+      }
+    } else {
+      console.log(`⏭️ Звонков дольше 10 сек не найдено, тег 15 мин остается`);
+    }
+  } catch (e) {
+    console.log(`❌ Ошибка проверки тега 15 мин: ${e.message}`);
   }
 }
 
@@ -306,6 +414,7 @@ export default {
         
         if (noteType === '4' || noteType === '10' || noteType === '109') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
+          ctx.waitUntil(add15MinTagIfPresent(elementId, noteText, env));
           
           if (hasPaymentKeyword(noteText)) {
             ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
@@ -317,6 +426,10 @@ export default {
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
+        
+        // 🆕 Проверяем и удаляем тег 15 мин при обновлении сделки
+        ctx.waitUntil(checkAndRemove15MinTag(leadId, env));
+        
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
         if (!leadRes.ok) return new Response("OK");
         const lead = await safeJsonParse(leadRes);
@@ -431,10 +544,9 @@ export default {
       if (pipelineId === 5276629 && newStatusId === 143) {
         customFieldsUpdates.push(...processStatus143Logic(fields));
         
-        // 🆕 ОЧИСТКА ПОЛЕЙ ПРИ ПЕРЕХОДЕ НА 143 В ТЕХНИКЕ
-        customFieldsUpdates.push({ field_id: 573459, values: null }); // Дата оплаты
-        customFieldsUpdates.push({ field_id: 578879, values: null }); // Предоплата
-        patchPayload.price = 0; // Очистка бюджета (системное поле amoCRM)
+        customFieldsUpdates.push({ field_id: 573459, values: null });
+        customFieldsUpdates.push({ field_id: 578879, values: null });
+        patchPayload.price = 0;
       }
 
       const matchedRule = RULES.find(rule =>
@@ -469,14 +581,13 @@ export default {
           if (targetPipeline && targetPipeline !== pipelineId) {
             patchPayload.pipeline_id = targetPipeline;
             patchPayload.status_id = 143;
-            console.log(`🔄 КОРРЕКТИРОВКА ВОРОНКИ: сделка ${leadId} → ${reason} (было pipeline=${pipelineId}, стало pipeline=${targetPipeline})`);
+            console.log(` КОРРЕКТИРОВКА ВОРОНКИ: сделка ${leadId} → ${reason} (было pipeline=${pipelineId}, стало pipeline=${targetPipeline})`);
           } else if (targetPipeline && targetPipeline === pipelineId) {
             console.log(`✅ Воронка уже корректна для сделки ${leadId} (${reason})`);
           }
         }
       }
 
-      // Сохраняем сброс даты создания только для перехода из Услуг (47069740) в Технику
       if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
