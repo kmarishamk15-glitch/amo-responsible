@@ -182,56 +182,59 @@ async function addCartTagIfPresent(leadId, noteText, env) {
   } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
 }
 
-// 🔊 "ГРОМКАЯ" ФУНКЦИЯ ДЛЯ ОТЛАДКИ
+// 🔊 ИСПРАВЛЕННАЯ ФУНКЦИЯ: используем /notes вместо /history
 async function checkLongCallsAndNotify(leadId, env) {
   console.log(`🔔 [DEBUG 1] checkLongCallsAndNotify ЗАПУЩЕНА для сделки ${leadId}`);
   try {
-    console.log(`🔔 [DEBUG 2] Запрашиваем историю для ${leadId}...`);
-    const historyRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/history`, {
+    console.log(`🔔 [DEBUG 2] Запрашиваем ПРИМЕЧАНИЯ для ${leadId}...`);
+    const notesRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
     
-    console.log(`🔔 [DEBUG 3] Ответ истории: статус ${historyRes.status}`);
-    if (!historyRes.ok) {
-      console.log(`❌ [DEBUG] Ошибка получения истории: ${historyRes.status}`);
+    console.log(`🔔 [DEBUG 3] Ответ примечаний: статус ${notesRes.status}`);
+    if (!notesRes.ok) {
+      console.log(`❌ [DEBUG] Ошибка получения примечаний: ${notesRes.status}`);
       return;
     }
     
-    const historyData = await safeJsonParse(historyRes);
-    console.log(`🔔 [DEBUG 4] Данные получены. Есть events?`, !!historyData?._embedded?.events);
+    const notesData = await safeJsonParse(notesRes);
+    console.log(`🔔 [DEBUG 4] Данные получены. Есть _embedded.notes?`, !!notesData?._embedded?.notes);
     
-    if (!historyData || !historyData._embedded || !historyData._embedded.events) {
-      console.log(`⏭️ [DEBUG] История пуста или нет событий для сделки ${leadId}`);
+    if (!notesData || !notesData._embedded || !notesData._embedded.notes) {
+      console.log(`⏭️ [DEBUG] Примечания пусты для сделки ${leadId}`);
       return;
     }
     
-    const events = historyData._embedded.events;
-    const alreadyNotified = events.some(event => event.text && event.text.includes(BITRIX_NOTE_MARKER));
+    const notes = notesData._embedded.notes;
+    
+    // Проверяем, есть ли уже маркер
+    const alreadyNotified = notes.some(note => note.params?.text && note.params.text.includes(BITRIX_NOTE_MARKER));
     console.log(`🔔 [DEBUG 5] Уже было уведомление?`, alreadyNotified);
     if (alreadyNotified) return;
     
-    const longCalls = events.filter(event => {
-      const isCall = event.type === 'call' || event.note_type === '12' || event.note_type === '13' || event.note_type === '11';
+    // Ищем звонки (note_type 11, 12, 13)
+    const longCalls = notes.filter(note => {
+      const isCall = note.note_type === '11' || note.note_type === '12' || note.note_type === '13';
       if (!isCall) return false;
-      const duration = event.duration || (event.params && event.params.duration) || 0;
+      const duration = note.params?.duration || 0;
       return duration > LONG_CALL_THRESHOLD;
     });
     
     console.log(`🔔 [DEBUG 6] Найдено длинных звонков (>8 мин):`, longCalls.length);
     if (longCalls.length === 0) return;
     
-    const longestCall = longCalls.reduce((max, call) => {
-      const dur = call.duration || (call.params && call.params.duration) || 0;
-      const maxDur = max.duration || (max.params && max.params.duration) || 0;
-      return dur > maxDur ? call : max;
+    const longestCall = longCalls.reduce((max, note) => {
+      const dur = note.params?.duration || 0;
+      const maxDur = max.params?.duration || 0;
+      return dur > maxDur ? note : max;
     });
     
-    const duration = longestCall.duration || (longestCall.params && longestCall.params.duration) || 0;
+    const duration = longestCall.params?.duration || 0;
     const minutes = Math.floor(duration / 60);
     const seconds = duration % 60;
     const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    const callType = longestCall.note_type === '12' ? 'Входящий' : 'Исходящий';
-    const callTime = longestCall.date_create ? new Date(longestCall.date_create * 1000).toLocaleString('ru-RU') : 'неизвестно';
+    const callType = longestCall.note_type === '12' ? 'Входящий' : (longestCall.note_type === '13' ? 'Исходящий' : 'Пропущенный');
+    const callTime = longestCall.created_at ? new Date(longestCall.created_at * 1000).toLocaleString('ru-RU') : 'неизвестно';
     
     console.log(`🔔 [DEBUG 7] Готовим сообщение для Bitrix: ${durationStr}`);
     
@@ -261,10 +264,11 @@ async function checkLongCallsAndNotify(leadId, env) {
     
     if (bitrixRes.ok) {
       console.log(`✅ [DEBUG] Уведомление успешно отправлено в Bitrix для сделки ${leadId}`);
+      // Добавляем маркер как обычное примечание
       await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify([{ note_type: 4, text: `${BITRIX_NOTE_MARKER} (Длительность: ${durationStr}, ${callTime})` }])
+        body: JSON.stringify([{ note_type: 4, params: { text: `${BITRIX_NOTE_MARKER} (Длительность: ${durationStr}, ${callTime})` } }])
       });
       console.log(`📝 [DEBUG] Примечание-маркер добавлено в сделку ${leadId}`);
     } else {
@@ -335,10 +339,9 @@ export default {
         
         console.log(`📝 Детали: element_id=${elementId}, note_type=${noteType}`);
         
-        // 🔊 ДОБАВЛЕНЫ ТИПЫ 11, 12, 13 (звонки от телефонии)
         if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
-          ctx.waitUntil(checkLongCallsAndNotify(elementId, env)); // 🔊 Запускаем проверку
+          ctx.waitUntil(checkLongCallsAndNotify(elementId, env));
           if (hasPaymentKeyword(noteText)) ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, null, env));
         }
         return new Response("OK");
@@ -346,7 +349,7 @@ export default {
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        ctx.waitUntil(checkLongCallsAndNotify(leadId, env)); // 🔊 Запускаем проверку
+        ctx.waitUntil(checkLongCallsAndNotify(leadId, env));
         
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
         if (!leadRes.ok) return new Response("OK");
