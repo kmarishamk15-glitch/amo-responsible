@@ -47,6 +47,11 @@ const NEW_TYPE_VALUE = 931811;
 
 const FIELD_PAYMENT_METHOD = 574905;
 
+// 🆕 Настройки для уведомлений о длинных звонках в Bitrix24 (изменено на 8 минут)
+const LONG_CALL_THRESHOLD = 480; // 8 минут в секундах (8 * 60)
+const BITRIX_CHAT_ID = 461;
+const BITRIX_NOTE_MARKER = "📞 Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
+
 const PAYMENT_KEYWORDS = [
   { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
   { keys: ['кредит', 'кредитом', 'кредиту', 'кредите'], id: 973117 },
@@ -193,6 +198,117 @@ async function addCartTagIfPresent(leadId, noteText, env) {
   }
 }
 
+// 🆕 ФУНКЦИЯ: Проверка длинных звонков и отправка в Bitrix24
+async function checkLongCallsAndNotify(leadId, env) {
+  try {
+    // 1. Получаем историю сделки
+    const historyRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/history`, {
+      headers: { 
+        Authorization: `Bearer ${env.AMO_TOKEN}`, 
+        Accept: "application/json" 
+      }
+    });
+    
+    if (!historyRes.ok) return;
+    
+    const historyData = await safeJsonParse(historyRes);
+    if (!historyData || !historyData._embedded || !historyData._embedded.events) return;
+    
+    const events = historyData._embedded.events;
+    
+    // 2. Проверяем, есть ли уже примечание-маркер (чтобы не дублировать уведомления)
+    const alreadyNotified = events.some(event => 
+      event.text && event.text.includes(BITRIX_NOTE_MARKER)
+    );
+    
+    if (alreadyNotified) {
+      return; // Уведомление уже было отправлено, выходим
+    }
+    
+    // 3. Ищем звонки дольше 8 минут (480 секунд)
+    const longCalls = events.filter(event => {
+      const isCall = event.type === 'call' || event.note_type === '12' || event.note_type === '13';
+      if (!isCall) return false;
+      
+      const duration = event.duration || (event.params && event.params.duration) || 0;
+      return duration > LONG_CALL_THRESHOLD;
+    });
+    
+    if (longCalls.length === 0) return; // Длинных звонков не найдено
+    
+    // 4. Берём самый длинный звонок для отчета
+    const longestCall = longCalls.reduce((max, call) => {
+      const dur = call.duration || (call.params && call.params.duration) || 0;
+      const maxDur = max.duration || (max.params && max.params.duration) || 0;
+      return dur > maxDur ? call : max;
+    });
+    
+    const duration = longestCall.duration || (longestCall.params && longestCall.params.duration) || 0;
+    const minutes = Math.floor(duration / 60);
+    const seconds = duration % 60;
+    const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    
+    const callType = longestCall.note_type === '12' ? 'Входящий' : 'Исходящий';
+    const callTime = longestCall.date_create ? new Date(longestCall.date_create * 1000).toLocaleString('ru-RU') : 'неизвестно';
+    
+    // 5. Формируем сообщение для Bitrix24
+    const bitrixMessage = `📞 <b>Длинный звонок в amoCRM</b>\n\n` +
+      `🔗 Сделка: <a href="https://repairmyapple.amocrm.ru/leads/detail/${leadId}">#${leadId}</a>\n` +
+      `⏱ Длительность: <b>${durationStr}</b>\n` +
+      `📞 Тип: ${callType}\n` +
+      `🕐 Время: ${callTime}\n\n` +
+      `⚠️ Звонок превышает 8 минут!`;
+    
+    const webhookUrl = env.BITRIX_WEBHOOK_URL;
+    if (!webhookUrl) {
+      console.log(`❌ BITRIX_WEBHOOK_URL не настроен в переменных окружения`);
+      return;
+    }
+    
+    // 6. Отправляем в Bitrix24
+    const bitrixRes = await fetch(`${webhookUrl}/im.message.add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        DIALOG_ID: `chat${BITRIX_CHAT_ID}`,
+        MESSAGE: bitrixMessage,
+        ATTACH: [{
+          TYPE: "LINK",
+          LINK: {
+            NAME: `Сделка #${leadId} в amoCRM`,
+            LINK: `https://repairmyapple.amocrm.ru/leads/detail/${leadId}`,
+            IMAGE_URL: "https://www.amocrm.ru/i/logo.png"
+          }
+        }]
+      })
+    });
+    
+    if (bitrixRes.ok) {
+      console.log(`✅ Уведомление о длинном звонке (${durationStr}) отправлено в Bitrix для сделки ${leadId}`);
+      
+      // 7. Добавляем примечание-маркер в сделку, чтобы не отправлять повторно
+      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
+        method: "POST",
+        headers: { 
+          Authorization: `Bearer ${env.AMO_TOKEN}`, 
+          "Content-Type": "application/json" 
+        },
+        body: JSON.stringify([{
+          note_type: 4,
+          text: `${BITRIX_NOTE_MARKER} (Длительность: ${durationStr}, ${callTime})`
+        }])
+      });
+      
+      console.log(`📝 Примечание-маркер добавлено в сделку ${leadId}`);
+    } else {
+      const errText = await bitrixRes.text();
+      console.log(`❌ Ошибка отправки в Bitrix: ${bitrixRes.status} - ${errText.substring(0, 300)}`);
+    }
+  } catch (e) {
+    console.log(`❌ Ошибка checkLongCallsAndNotify: ${e.message}`);
+  }
+}
+
 async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
   try {
     let text = "";
@@ -307,6 +423,9 @@ export default {
         if (noteType === '4' || noteType === '10' || noteType === '109') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           
+          // 🆕 Проверяем длинные звонки и при добавлении примечания
+          ctx.waitUntil(checkLongCallsAndNotify(elementId, env));
+          
           if (hasPaymentKeyword(noteText)) {
             ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
           }
@@ -317,6 +436,10 @@ export default {
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
+        
+        // 🆕 Проверяем длинные звонки при каждом обновлении сделки
+        ctx.waitUntil(checkLongCallsAndNotify(leadId, env));
+        
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
         if (!leadRes.ok) return new Response("OK");
         const lead = await safeJsonParse(leadRes);
