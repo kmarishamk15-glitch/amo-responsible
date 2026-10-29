@@ -171,78 +171,62 @@ function processStatus143Logic(fields) {
 
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
-  console.log(`🛒 Найден "ЗАКАЗ ИЗ КОРЗИНЫ" в примечании сделки ${leadId}`);
   try {
     const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ tags_to_add: [{ id: 415953 }] })
     });
-    if (updateRes.ok) console.log(`✅ УСПЕХ! Тег "корзина" добавлен к сделке ${leadId}`);
+    if (updateRes.ok) console.log(`✅ Тег "корзина" добавлен к сделке ${leadId}`);
   } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
 }
 
-// 🔊 ИСПРАВЛЕННАЯ ФУНКЦИЯ: используем /notes вместо /history
+// ✅ ФИНАЛЬНАЯ РАБОЧАЯ ФУНКЦИЯ (БЕЗ СПАМА В ЛОГАХ)
 async function checkLongCallsAndNotify(leadId, env) {
-  console.log(`🔔 [DEBUG 1] checkLongCallsAndNotify ЗАПУЩЕНА для сделки ${leadId}`);
   try {
-    console.log(`🔔 [DEBUG 2] Запрашиваем ПРИМЕЧАНИЯ для ${leadId}...`);
     const notesRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    
-    console.log(`🔔 [DEBUG 3] Ответ примечаний: статус ${notesRes.status}`);
-    if (!notesRes.ok) {
-      console.log(`❌ [DEBUG] Ошибка получения примечаний: ${notesRes.status}`);
-      return;
-    }
+    if (!notesRes.ok) return;
     
     const notesData = await safeJsonParse(notesRes);
-    console.log(`🔔 [DEBUG 4] Данные получены. Есть _embedded.notes?`, !!notesData?._embedded?.notes);
-    
-    if (!notesData || !notesData._embedded || !notesData._embedded.notes) {
-      console.log(`⏭️ [DEBUG] Примечания пусты для сделки ${leadId}`);
-      return;
-    }
+    if (!notesData || !notesData._embedded || !notesData._embedded.notes) return;
     
     const notes = notesData._embedded.notes;
     
-    // Проверяем, есть ли уже маркер
-    const alreadyNotified = notes.some(note => note.params?.text && note.params.text.includes(BITRIX_NOTE_MARKER));
-    console.log(`🔔 [DEBUG 5] Уже было уведомление?`, alreadyNotified);
+    // Проверяем маркер
+    const alreadyNotified = notes.some(note => 
+      (note.params?.text && note.params.text.includes(BITRIX_NOTE_MARKER)) || 
+      (note.text && note.text.includes(BITRIX_NOTE_MARKER))
+    );
     if (alreadyNotified) return;
     
-    // Ищем звонки (note_type 11, 12, 13)
+    // ✅ ИСПРАВЛЕНИЕ: ищем type === 'call_in' или 'call_out', и берем duration прямо из note
     const longCalls = notes.filter(note => {
-      const isCall = note.note_type === '11' || note.note_type === '12' || note.note_type === '13';
+      const isCall = note.type === 'call_in' || note.type === 'call_out' || 
+                     note.note_type === '11' || note.note_type === '12' || note.note_type === '13';
       if (!isCall) return false;
-      const duration = note.params?.duration || 0;
+      const duration = note.duration || 0; 
       return duration > LONG_CALL_THRESHOLD;
     });
     
-    console.log(`🔔 [DEBUG 6] Найдено длинных звонков (>8 мин):`, longCalls.length);
     if (longCalls.length === 0) return;
     
     const longestCall = longCalls.reduce((max, note) => {
-      const dur = note.params?.duration || 0;
-      const maxDur = max.params?.duration || 0;
+      const dur = note.duration || 0;
+      const maxDur = max.duration || 0;
       return dur > maxDur ? note : max;
     });
     
-    const duration = longestCall.params?.duration || 0;
+    const duration = longestCall.duration || 0;
     const minutes = Math.floor(duration / 60);
     const seconds = duration % 60;
     const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    const callType = longestCall.note_type === '12' ? 'Входящий' : (longestCall.note_type === '13' ? 'Исходящий' : 'Пропущенный');
+    const callType = longestCall.type === 'call_in' || longestCall.note_type === '12' ? 'Входящий' : 'Исходящий';
     const callTime = longestCall.created_at ? new Date(longestCall.created_at * 1000).toLocaleString('ru-RU') : 'неизвестно';
     
-    console.log(`🔔 [DEBUG 7] Готовим сообщение для Bitrix: ${durationStr}`);
-    
     const webhookUrl = env.BITRIX_WEBHOOK_URL;
-    if (!webhookUrl) {
-      console.log(`❌ [DEBUG] BITRIX_WEBHOOK_URL не настроен в переменных окружения!`);
-      return;
-    }
+    if (!webhookUrl) return;
     
     const bitrixMessage = `📞 <b>Длинный звонок в amoCRM</b>\n\n` +
       `🔗 Сделка: <a href="https://repairmyapple.amocrm.ru/leads/detail/${leadId}">#${leadId}</a>\n` +
@@ -251,7 +235,6 @@ async function checkLongCallsAndNotify(leadId, env) {
       `🕐 Время: ${callTime}\n\n` +
       `⚠️ Звонок превышает 8 минут!`;
     
-    console.log(`🔔 [DEBUG 8] Отправляем запрос в Bitrix...`);
     const bitrixRes = await fetch(`${webhookUrl}/im.message.add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -263,20 +246,15 @@ async function checkLongCallsAndNotify(leadId, env) {
     });
     
     if (bitrixRes.ok) {
-      console.log(`✅ [DEBUG] Уведомление успешно отправлено в Bitrix для сделки ${leadId}`);
-      // Добавляем маркер как обычное примечание
+      console.log(`✅ Уведомление о звонке (${durationStr}) отправлено в Bitrix для сделки ${leadId}`);
       await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify([{ note_type: 4, params: { text: `${BITRIX_NOTE_MARKER} (Длительность: ${durationStr}, ${callTime})` } }])
+        body: JSON.stringify([{ note_type: 4, params: { text: `${BITRIX_NOTE_MARKER} (${durationStr})` } }])
       });
-      console.log(`📝 [DEBUG] Примечание-маркер добавлено в сделку ${leadId}`);
-    } else {
-      const errText = await bitrixRes.text();
-      console.log(`❌ [DEBUG] Ошибка отправки в Bitrix: ${bitrixRes.status} - ${errText.substring(0, 300)}`);
     }
   } catch (e) {
-    console.log(`💥 [DEBUG] КРИТИЧЕСКАЯ ОШИБКА в checkLongCallsAndNotify: ${e.message}`);
+    console.log(`❌ Ошибка checkLongCallsAndNotify: ${e.message}`);
   }
 }
 
@@ -308,7 +286,6 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
         body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] }] })
       });
       if (res.ok) console.log(`✅ Способ оплаты обновлен: ${enumId}`);
-      else if (res.status === 403) console.log(`⚠️ ПРОПУСК: Нет прав на изменение поля "Способ оплаты" (403).`);
     }
   } catch (e) { console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`); }
 }
@@ -330,14 +307,10 @@ export default {
       const hasStatus = params.has("leads[status][0][id]");
       const hasUpdate = params.has("leads[update][0][id]");
       
-      console.log(`📨 Webhook: notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
-
       if (hasNotes) {
         const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
-        
-        console.log(`📝 Детали: element_id=${elementId}, note_type=${noteType}`);
         
         if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
@@ -474,7 +447,6 @@ export default {
       if (matchedRule) {
         if (userId && actualResponsibleId !== userId) {
           patchPayload.responsible_user_id = userId;
-          console.log(`✅ Ответственный: ${leadId} -> ${userId}`);
         }
         if (newStatusId === 143 && type) {
           let targetPipeline = null, reason = "";
@@ -486,7 +458,6 @@ export default {
           if (targetPipeline && targetPipeline !== pipelineId) {
             patchPayload.pipeline_id = targetPipeline;
             patchPayload.status_id = 143;
-            console.log(`🔄 КОРРЕКТИРОВКА ВОРОНКИ: сделка ${leadId} → ${reason}`);
           }
         }
       }
@@ -507,7 +478,6 @@ export default {
       }
       return new Response("OK");
     } catch (e) {
-      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
