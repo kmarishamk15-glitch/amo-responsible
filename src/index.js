@@ -44,7 +44,6 @@ const TARGET_STATUS_OLD = 143;
 const FIELD_REQUEST_TYPE = 466253;
 const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
-
 const FIELD_PAYMENT_METHOD = 574905;
 
 const LONG_CALL_THRESHOLD = 480; // 8 минут в секундах
@@ -181,52 +180,65 @@ async function addCartTagIfPresent(leadId, noteText, env) {
   } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
 }
 
-// ✅ ФИНАЛЬНАЯ РАБОЧАЯ ФУНКЦИЯ (БЕЗ СПАМА В ЛОГАХ)
+// 🔥 ПУЛЕНЕПРОБИВАЕМАЯ ФУНКЦИЯ ПРОВЕРКИ ЗВОНКОВ
 async function checkLongCallsAndNotify(leadId, env) {
+  console.log(`🔍 [START] Проверка звонков для сделки ${leadId}`);
   try {
     const notesRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
     });
-    if (!notesRes.ok) return;
+    if (!notesRes.ok) {
+      console.log(`❌ Ошибка запроса примечаний: ${notesRes.status}`);
+      return;
+    }
     
     const notesData = await safeJsonParse(notesRes);
-    if (!notesData || !notesData._embedded || !notesData._embedded.notes) return;
+    const notes = notesData?._embedded?.notes || [];
+    console.log(`📋 Всего примечаний: ${notes.length}`);
     
-    const notes = notesData._embedded.notes;
-    
-    // Проверяем маркер
     const alreadyNotified = notes.some(note => 
       (note.params?.text && note.params.text.includes(BITRIX_NOTE_MARKER)) || 
       (note.text && note.text.includes(BITRIX_NOTE_MARKER))
     );
-    if (alreadyNotified) return;
+    if (alreadyNotified) {
+      console.log(`⏭️ Уже уведомляли ранее, выходим`);
+      return;
+    }
     
-    // ✅ ИСПРАВЛЕНИЕ: ищем type === 'call_in' или 'call_out', и берем duration прямо из note
     const longCalls = notes.filter(note => {
+      // Проверяем и type (call_in/call_out), и note_type (11/12/13) на всякий случай
       const isCall = note.type === 'call_in' || note.type === 'call_out' || 
-                     note.note_type === '11' || note.note_type === '12' || note.note_type === '13';
+                     String(note.note_type) === '11' || String(note.note_type) === '12' || String(note.note_type) === '13';
       if (!isCall) return false;
-      const duration = note.duration || 0; 
+      
+      // Берем длительность из любого возможного места и преобразуем в число
+      const duration = Number(note.duration) || Number(note.params?.duration) || 0;
+      console.log(`📞 НАЙДЕН ЗВОНОК: type="${note.type}", note_type="${note.note_type}", длительность=${duration} сек`);
+      
       return duration > LONG_CALL_THRESHOLD;
     });
     
+    console.log(`🚨 Длинных звонков (>8 мин) найдено: ${longCalls.length}`);
     if (longCalls.length === 0) return;
     
     const longestCall = longCalls.reduce((max, note) => {
-      const dur = note.duration || 0;
-      const maxDur = max.duration || 0;
+      const dur = Number(note.duration) || Number(note.params?.duration) || 0;
+      const maxDur = Number(max.duration) || Number(max.params?.duration) || 0;
       return dur > maxDur ? note : max;
     });
     
-    const duration = longestCall.duration || 0;
+    const duration = Number(longestCall.duration) || Number(longestCall.params?.duration) || 0;
     const minutes = Math.floor(duration / 60);
     const seconds = duration % 60;
     const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    const callType = longestCall.type === 'call_in' || longestCall.note_type === '12' ? 'Входящий' : 'Исходящий';
+    const callType = longestCall.type === 'call_in' || String(longestCall.note_type) === '12' ? 'Входящий' : 'Исходящий';
     const callTime = longestCall.created_at ? new Date(longestCall.created_at * 1000).toLocaleString('ru-RU') : 'неизвестно';
     
     const webhookUrl = env.BITRIX_WEBHOOK_URL;
-    if (!webhookUrl) return;
+    if (!webhookUrl) {
+      console.log(`❌ ОШИБКА: Переменная BITRIX_WEBHOOK_URL не задана в настройках Cloudflare!`);
+      return;
+    }
     
     const bitrixMessage = `📞 <b>Длинный звонок в amoCRM</b>\n\n` +
       `🔗 Сделка: <a href="https://repairmyapple.amocrm.ru/leads/detail/${leadId}">#${leadId}</a>\n` +
@@ -235,6 +247,7 @@ async function checkLongCallsAndNotify(leadId, env) {
       `🕐 Время: ${callTime}\n\n` +
       `⚠️ Звонок превышает 8 минут!`;
     
+    console.log(`📤 Отправка в Bitrix...`);
     const bitrixRes = await fetch(`${webhookUrl}/im.message.add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -246,15 +259,18 @@ async function checkLongCallsAndNotify(leadId, env) {
     });
     
     if (bitrixRes.ok) {
-      console.log(`✅ Уведомление о звонке (${durationStr}) отправлено в Bitrix для сделки ${leadId}`);
+      console.log(`✅ УСПЕХ! Уведомление отправлено в Bitrix и создан маркер в сделке ${leadId}`);
       await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify([{ note_type: 4, params: { text: `${BITRIX_NOTE_MARKER} (${durationStr})` } }])
       });
+    } else {
+      const errText = await bitrixRes.text();
+      console.log(`❌ Ошибка Bitrix: ${bitrixRes.status} - ${errText.substring(0, 200)}`);
     }
   } catch (e) {
-    console.log(`❌ Ошибка checkLongCallsAndNotify: ${e.message}`);
+    console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
   }
 }
 
