@@ -166,8 +166,6 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
-// --- ФОНОВЫЕ ФУНКЦИИ (Выполняются после ответа amoCRM) ---
-
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
   try {
@@ -176,7 +174,8 @@ async function addCartTagIfPresent(leadId, noteText, env) {
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ tags_to_add: [{ id: 415953 }] })
     });
-  } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
+    console.log(`✅ Тег корзина добавлен: ${leadId}`);
+  } catch (e) { console.log(`❌ Ошибка тега: ${e.message}`); }
 }
 
 async function updatePaymentMethodFromNote(elementId, noteText, env) {
@@ -203,20 +202,25 @@ async function updatePaymentMethodFromNote(elementId, noteText, env) {
         method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] }] })
       });
+      console.log(`✅ Способ оплаты обновлен: ${elementId}`);
     }
-  } catch (e) { console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`); }
+  } catch (e) { console.log(`❌ Ошибка оплаты: ${e.message}`); }
 }
 
 async function processUpdateBackground(leadId, env) {
   const now = Date.now();
-  if (processedLeads.has(leadId) && (now - processedLeads.get(leadId)) < 30000) return;
+  if (processedLeads.has(leadId) && (now - processedLeads.get(leadId)) < 30000) {
+    console.log(`⏭️ Пропуск дубля: ${leadId}`);
+    return;
+  }
   processedLeads.set(leadId, now);
 
   try {
+    console.log(`🔄 Обработка update: ${leadId}`);
     const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { 
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } 
     });
-    if (!leadRes.ok) return;
+    if (!leadRes.ok) { console.log(`❌ Ошибка GET: ${leadRes.status}`); return; }
     const lead = await safeJsonParse(leadRes);
     if (!lead) return;
 
@@ -265,10 +269,13 @@ async function processUpdateBackground(leadId, env) {
     if (custom_fields_values.length > 0 || newPrice != null) {
       const patchBody = { custom_fields_values };
       if (newPrice != null) patchBody.price = newPrice;
-      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
         method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(patchBody)
       });
+      console.log(`✅ Update применен: ${leadId}, статус: ${patchRes.status}`);
+    } else {
+      console.log(`⏭️ Нечего обновлять: ${leadId}`);
     }
   } catch (e) { console.log(`❌ Ошибка processUpdate: ${e.message}`); }
 }
@@ -277,6 +284,7 @@ async function processStatusBackground(leadId, pipelineId, newStatusId, oldStatu
   if (!oldStatusId || oldStatusId === newStatusId) return;
 
   try {
+    console.log(`🔄 Обработка status: ${leadId}, ${oldStatusId}→${newStatusId}`);
     const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
     if (!leadDetailsRes.ok) return;
     const leadData = await safeJsonParse(leadDetailsRes);
@@ -310,15 +318,9 @@ async function processStatusBackground(leadId, pipelineId, newStatusId, oldStatu
         }
         if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
         const promo = isPromo(leadData.name);
-        
-        // Для получения бюджета нам нужны все поля, делаем быстрый запрос
-        const fullLeadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-        const fullLead = await safeJsonParse(fullLeadRes);
-        if (fullLead) {
-            const budgetUpdates = getBudgetUpdates(fullLead, fullLead.custom_fields_values || [], promo);
-            customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
-            if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
-        }
+        const budgetUpdates = getBudgetUpdates(leadData, fields, promo);
+        customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
+        if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
       }
     }
 
@@ -361,20 +363,24 @@ async function processStatusBackground(leadId, pipelineId, newStatusId, oldStatu
 
     if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
       if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      const patchRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
         method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(patchPayload)
       });
+      console.log(`✅ Status применен: ${leadId}, статус: ${patchRes.status}`);
     }
   } catch (e) { console.log(`❌ Ошибка processStatus: ${e.message}`); }
 }
 
-// --- ГЛАВНЫЙ ОБРАБОТЧИК (Отвечает за < 50мс) ---
-
 export default {
   async fetch(request, env, ctx) {
+    console.log(`📨 ЗАПРОС ПОЛУЧЕН!`);
+    
     try {
-      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) return new Response("OK");
+      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) {
+        console.log(`❌ Нет AMO_DOMAIN или AMO_TOKEN`);
+        return new Response("OK");
+      }
       
       const rawBody = await request.text();
       const params = new URLSearchParams(rawBody);
@@ -383,22 +389,27 @@ export default {
       const hasStatus = params.has("leads[status][0][id]");
       const hasUpdate = params.has("leads[update][0][id]");
       
+      console.log(`📨 notes=${hasNotes}, status=${hasStatus}, update=${hasUpdate}`);
+      
       if (hasNotes) {
         const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
+        console.log(`📝 Note: ${elementId}, type=${noteType}`);
+        
         if (noteType === '4' || noteType === '10' || noteType === '109') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           if (hasPaymentKeyword(noteText)) ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, env));
         }
-        return new Response("OK"); // МГНОВЕННЫЙ ОТВЕТ
+        return new Response("OK");
       }
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        ctx.waitUntil(processUpdateBackground(leadId, env)); // ВСЯ РАБОТА В ФОНЕ
-        return new Response("OK"); // МГНОВЕННЫЙ ОТВЕТ
+        console.log(`🔄 Update: ${leadId}`);
+        ctx.waitUntil(processUpdateBackground(leadId, env));
+        return new Response("OK");
       }
 
       if (hasStatus) {
@@ -409,13 +420,22 @@ export default {
         const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
         const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
-        ctx.waitUntil(processStatusBackground(leadId, pipelineId, newStatusId, oldStatusId, oldPipelineId, userId, env)); // ВСЯ РАБОТА В ФОНЕ
-        return new Response("OK"); // МГНОВЕННЫЙ ОТВЕТ
+        console.log(`🔄 Status: ${leadId}, ${oldStatusId}→${newStatusId}`);
+        ctx.waitUntil(processStatusBackground(leadId, pipelineId, newStatusId, oldStatusId, oldPipelineId, userId, env));
+        return new Response("OK");
       }
 
+      console.log(`⏭️ Неизвестный тип запроса`);
       return new Response("OK");
     } catch (e) {
+      console.log(`💥 ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
 };
+
+function hasPaymentKeyword(text) {
+  const lower = text.toLowerCase();
+  if (/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
+  return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
+}
