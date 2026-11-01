@@ -46,7 +46,6 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
-// 🆕 КЭШ ДЛЯ ПРЕДОТВРАЩЕНИЯ ПОВТОРНОЙ ОБРАБОТКИ
 const processedLeads = new Map();
 
 const PAYMENT_KEYWORDS = [
@@ -167,42 +166,34 @@ function processStatus143Logic(fields) {
   return custom_fields_values;
 }
 
+// --- ФОНОВЫЕ ФУНКЦИИ (Выполняются после ответа amoCRM) ---
+
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
-  
   try {
-    const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+    await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ tags_to_add: [{ id: 415953 }] })
     });
-    
-    if (updateRes.ok) {
-      console.log(`✅ Тег "корзина" добавлен к сделке ${leadId}`);
-    }
-  } catch (e) { 
-    console.log(`❌ Ошибка тега корзины: ${e.message}`); 
-  }
+  } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
 }
 
-async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
+async function updatePaymentMethodFromNote(elementId, noteText, env) {
   try {
-    let text = "";
-    try { text = decodeURIComponent(noteText || "").toLowerCase(); }
-    catch (e) { text = (noteText || "").toLowerCase(); }
-    if (!text) return;
-
-    let enumId = null, foundKey = "", reason = "";
+    let text = decodeURIComponent(noteText || "").toLowerCase();
+    let enumId = null;
+    
     const aiMatch = text.match(/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i);
     if (aiMatch && aiMatch[1]) {
       for (const item of PAYMENT_KEYWORDS) {
-        if (item.keys.some(k => aiMatch[1].includes(k))) { enumId = item.id; foundKey = aiMatch[1]; reason = "ИИ"; break; }
+        if (item.keys.some(k => aiMatch[1].includes(k))) { enumId = item.id; break; }
       }
     }
     if (!enumId) {
       for (const item of PAYMENT_KEYWORDS) {
         for (const key of item.keys) {
-          if (matchesKeyword(text, key)) { enumId = item.id; foundKey = key; reason = "Ключевое слово"; break; }
+          if (matchesKeyword(text, key)) { enumId = item.id; break; }
         }
         if (enumId) break;
       }
@@ -216,16 +207,172 @@ async function updatePaymentMethodFromNote(elementId, noteText, elementType, env
   } catch (e) { console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`); }
 }
 
-function hasPaymentKeyword(text) {
-  const lower = text.toLowerCase();
-  if (/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
-  return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
+async function processUpdateBackground(leadId, env) {
+  const now = Date.now();
+  if (processedLeads.has(leadId) && (now - processedLeads.get(leadId)) < 30000) return;
+  processedLeads.set(leadId, now);
+
+  try {
+    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { 
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } 
+    });
+    if (!leadRes.ok) return;
+    const lead = await safeJsonParse(leadRes);
+    if (!lead) return;
+
+    const fields = lead.custom_fields_values || [];
+    let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
+    for (const field of fields) {
+      if (!field.values?.length) continue;
+      if (field.field_id === 466253) type = field.values[0].enum_id;
+      if (field.field_id === 577689) model = field.values[0].enum_id;
+      if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+      if (field.field_id === 582429) currentPackage = field.values[0].enum_id;
+      if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
+    }
+
+    const targetCategory = deriveCategory(type, model, currentCategory);
+    const targetPackage = derivePackage(type, model, currentPackage);
+    let soldPackage = null;
+    if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
+      if (currentPackage === 982607) soldPackage = 982609;
+      else if (currentPackage === 982611) soldPackage = 982617;
+      else if (currentPackage === 982613) soldPackage = 982615;
+      else if (currentPackage === 982619) soldPackage = 982621;
+    }
+
+    const custom_fields_values = [];
+    if (currentCategory !== targetCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
+    if (targetPackage && currentPackage !== targetPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
+    if (soldPackage && currentSoldPackage !== soldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
+
+    const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
+    if (correctionUpdate) custom_fields_values.push(correctionUpdate);
+
+    let newPrice = null;
+    if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
+      if (!lead.name || !lead.name.toLowerCase().includes("исключение")) {
+        const promo = isPromo(lead.name);
+        const budgetUpdates = getBudgetUpdates(lead, fields, promo);
+        custom_fields_values.push(...budgetUpdates.custom_fields_values);
+        newPrice = budgetUpdates.newPrice;
+      }
+    }
+    if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
+      custom_fields_values.push(...processStatus143Logic(fields));
+    }
+
+    if (custom_fields_values.length > 0 || newPrice != null) {
+      const patchBody = { custom_fields_values };
+      if (newPrice != null) patchBody.price = newPrice;
+      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(patchBody)
+      });
+    }
+  } catch (e) { console.log(`❌ Ошибка processUpdate: ${e.message}`); }
 }
+
+async function processStatusBackground(leadId, pipelineId, newStatusId, oldStatusId, oldPipelineId, userId, env) {
+  if (!oldStatusId || oldStatusId === newStatusId) return;
+
+  try {
+    const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
+    if (!leadDetailsRes.ok) return;
+    const leadData = await safeJsonParse(leadDetailsRes);
+    if (!leadData) return;
+
+    const fields = leadData.custom_fields_values || [];
+    const actualResponsibleId = leadData.responsible_user_id;
+    let type = null, model = null, currentCategory = null;
+    for (const field of fields) {
+      if (!field.values?.length) continue;
+      if (field.field_id === 466253) type = field.values[0].enum_id;
+      if (field.field_id === 577689) model = field.values[0].enum_id;
+      if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+    }
+
+    const patchPayload = {};
+    const customFieldsUpdates = [];
+
+    if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
+      customFieldsUpdates.push({ field_id: 573457, values: null });
+    }
+
+    if (pipelineId === 5276629 && newStatusId === 142) {
+      if (!leadData.name || !leadData.name.toLowerCase().includes("исключение")) {
+        const effectiveCategory = deriveCategory(type, model, currentCategory);
+        let targetRequestType = null;
+        if (effectiveCategory) {
+          if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
+          else if (effectiveCategory === 974781) targetRequestType = 938373;
+          else if (effectiveCategory === 974783) targetRequestType = 957159;
+        }
+        if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
+        const promo = isPromo(leadData.name);
+        
+        // Для получения бюджета нам нужны все поля, делаем быстрый запрос
+        const fullLeadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
+        const fullLead = await safeJsonParse(fullLeadRes);
+        if (fullLead) {
+            const budgetUpdates = getBudgetUpdates(fullLead, fullLead.custom_fields_values || [], promo);
+            customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
+            if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
+        }
+      }
+    }
+
+    if (pipelineId === 5276629 && newStatusId === 143) {
+      customFieldsUpdates.push(...processStatus143Logic(fields));
+      customFieldsUpdates.push({ field_id: 573459, values: null });
+      customFieldsUpdates.push({ field_id: 578879, values: null });
+      patchPayload.price = 0;
+    }
+
+    const matchedRule = RULES.find(rule =>
+      rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
+      rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
+    );
+
+    if (matchedRule) {
+      if (userId && actualResponsibleId !== userId) {
+        patchPayload.responsible_user_id = userId;
+      }
+      if (newStatusId === 143 && type) {
+        let targetPipeline = null;
+        if (type === 938315) targetPipeline = 5240944;
+        else if (type === 982245) targetPipeline = 5240944;
+        else if (type === 978137) targetPipeline = 5276629;
+        else if (type === 931811) targetPipeline = 5276629;
+
+        if (targetPipeline && targetPipeline !== pipelineId) {
+          patchPayload.pipeline_id = targetPipeline;
+          patchPayload.status_id = 143;
+        }
+      }
+    }
+
+    if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+      patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
+    }
+
+    const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
+    if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
+
+    if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
+      if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
+      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(patchPayload)
+      });
+    }
+  } catch (e) { console.log(`❌ Ошибка processStatus: ${e.message}`); }
+}
+
+// --- ГЛАВНЫЙ ОБРАБОТЧИК (Отвечает за < 50мс) ---
 
 export default {
   async fetch(request, env, ctx) {
-    const startTime = Date.now();
-    
     try {
       if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) return new Response("OK");
       
@@ -243,185 +390,32 @@ export default {
         
         if (noteType === '4' || noteType === '10' || noteType === '109') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
-          if (hasPaymentKeyword(noteText)) ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, null, env));
+          if (hasPaymentKeyword(noteText)) ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, env));
         }
-        return new Response("OK");
+        return new Response("OK"); // МГНОВЕННЫЙ ОТВЕТ
       }
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        
-        // ️ ПРОВЕРКА: не обрабатывали ли мы эту сделку недавно
-        const now = Date.now();
-        const lastProcessed = processedLeads.get(leadId);
-        if (lastProcessed && (now - lastProcessed) < 30000) { // 30 секунд
-          console.log(`️ Сделка ${leadId} недавно обработана, пропускаем`);
-          return new Response("OK");
-        }
-        processedLeads.set(leadId, now);
-        
-        // Быстрая обработка update
-        const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { 
-          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } 
-        });
-        if (!leadRes.ok) return new Response("OK");
-        
-        const lead = await safeJsonParse(leadRes);
-        if (!lead) return new Response("OK");
-
-        const fields = lead.custom_fields_values || [];
-        let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
-        for (const field of fields) {
-          if (!field.values?.length) continue;
-          if (field.field_id === 466253) type = field.values[0].enum_id;
-          if (field.field_id === 577689) model = field.values[0].enum_id;
-          if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
-          if (field.field_id === 582429) currentPackage = field.values[0].enum_id;
-          if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
-        }
-
-        const targetCategory = deriveCategory(type, model, currentCategory);
-        const targetPackage = derivePackage(type, model, currentPackage);
-        let soldPackage = null;
-        if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
-          if (currentPackage === 982607) soldPackage = 982609;
-          else if (currentPackage === 982611) soldPackage = 982617;
-          else if (currentPackage === 982613) soldPackage = 982615;
-          else if (currentPackage === 982619) soldPackage = 982621;
-        }
-
-        const custom_fields_values = [];
-        if (currentCategory !== targetCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
-        if (targetPackage && currentPackage !== targetPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
-        if (soldPackage && currentSoldPackage !== soldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
-
-        const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
-        if (correctionUpdate) custom_fields_values.push(correctionUpdate);
-
-        let newPrice = null;
-        if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
-          if (!lead.name || !lead.name.toLowerCase().includes("исключение")) {
-            const promo = isPromo(lead.name);
-            const budgetUpdates = getBudgetUpdates(lead, fields, promo);
-            custom_fields_values.push(...budgetUpdates.custom_fields_values);
-            newPrice = budgetUpdates.newPrice;
-          }
-        }
-        if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
-          custom_fields_values.push(...processStatus143Logic(fields));
-        }
-
-        if (custom_fields_values.length > 0 || newPrice != null) {
-          const patchBody = { custom_fields_values };
-          if (newPrice != null) patchBody.price = newPrice;
-          await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-            body: JSON.stringify(patchBody)
-          });
-        }
-        return new Response("OK");
+        ctx.waitUntil(processUpdateBackground(leadId, env)); // ВСЯ РАБОТА В ФОНЕ
+        return new Response("OK"); // МГНОВЕННЫЙ ОТВЕТ
       }
 
-      if (!hasStatus) return new Response("OK");
+      if (hasStatus) {
+        const leadId = Number(params.get("leads[status][0][id]"));
+        const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
+        const newStatusId = Number(params.get("leads[status][0][status_id]"));
+        const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
+        const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+        const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
 
-      const leadId = Number(params.get("leads[status][0][id]"));
-      const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
-      const newStatusId = Number(params.get("leads[status][0][status_id]"));
-      const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
-      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
-      const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
-
-      if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
-
-      const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
-      if (!leadDetailsRes.ok) return new Response("OK");
-      const leadData = await safeJsonParse(leadDetailsRes);
-      if (!leadData) return new Response("OK");
-
-      const fields = leadData.custom_fields_values || [];
-      const actualResponsibleId = leadData.responsible_user_id;
-      let type = null, model = null, currentCategory = null;
-      for (const field of fields) {
-        if (!field.values?.length) continue;
-        if (field.field_id === 466253) type = field.values[0].enum_id;
-        if (field.field_id === 577689) model = field.values[0].enum_id;
-        if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+        ctx.waitUntil(processStatusBackground(leadId, pipelineId, newStatusId, oldStatusId, oldPipelineId, userId, env)); // ВСЯ РАБОТА В ФОНЕ
+        return new Response("OK"); // МГНОВЕННЫЙ ОТВЕТ
       }
 
-      const patchPayload = {};
-      const customFieldsUpdates = [];
-
-      if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
-        customFieldsUpdates.push({ field_id: 573457, values: null });
-      }
-
-      if (pipelineId === 5276629 && newStatusId === 142) {
-        if (!leadData.name || !leadData.name.toLowerCase().includes("исключение")) {
-          const effectiveCategory = deriveCategory(type, model, currentCategory);
-          let targetRequestType = null;
-          if (effectiveCategory) {
-            if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
-            else if (effectiveCategory === 974781) targetRequestType = 938373;
-            else if (effectiveCategory === 974783) targetRequestType = 957159;
-          }
-          if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
-          const promo = isPromo(leadData.name);
-          const budgetUpdates = getBudgetUpdates(leadData, fields, promo);
-          customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
-          if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
-        }
-      }
-
-      if (pipelineId === 5276629 && newStatusId === 143) {
-        customFieldsUpdates.push(...processStatus143Logic(fields));
-        customFieldsUpdates.push({ field_id: 573459, values: null });
-        customFieldsUpdates.push({ field_id: 578879, values: null });
-        patchPayload.price = 0;
-      }
-
-      const matchedRule = RULES.find(rule =>
-        rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
-        rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
-      );
-
-      if (matchedRule) {
-        if (userId && actualResponsibleId !== userId) {
-          patchPayload.responsible_user_id = userId;
-        }
-        if (newStatusId === 143 && type) {
-          let targetPipeline = null, reason = "";
-          if (type === 938315) { targetPipeline = 5240944; reason = "Нецелевой услуги → Услуги"; } 
-          else if (type === 982245) { targetPipeline = 5240944; reason = "Сущ гарантия услуги → Услуги"; } 
-          else if (type === 978137) { targetPipeline = 5276629; reason = "Нецелевой техника → Техника"; } 
-          else if (type === 931811) { targetPipeline = 5276629; reason = "Сущ гарантия техника → Техника"; }
-
-          if (targetPipeline && targetPipeline !== pipelineId) {
-            patchPayload.pipeline_id = targetPipeline;
-            patchPayload.status_id = 143;
-          }
-        }
-      }
-
-      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
-        patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
-      }
-
-      const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
-      if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
-
-      if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
-        if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-          method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(patchPayload)
-        });
-      }
       return new Response("OK");
     } catch (e) {
       return new Response("OK"); 
-    } finally {
-      const duration = Date.now() - startTime;
-      console.log(`⏱ [PERF] Execution: ${duration}ms`);
     }
   }
 };
