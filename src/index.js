@@ -46,11 +46,14 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
-// 🆕 НАСТРОЙКИ ДЛЯ BITRIX И ДЛИННЫХ ЗВОНКОВ
+// 🆕 ИСПРАВЛЕННЫЕ НАСТРОЙКИ (БЕЗ ЭМОДЗИ В МАРКЕРЕ)
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_ID = 19127;
-const CALL_MARKER = "📞 Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
-const recentChecks = new Map(); // защита от шквала вебхуков по одной сделке
+const BITRIX_CHAT_ID = 461;
+const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
+
+// 🆕 ЗАЩИТА ОТ ГОНОК И СПАМА
+const recentChecks = new Map(); // Троттлинг 20 сек на сделку
+const inFlightCalls = new Set(); // Защита от параллельных вебхуков
 
 const PAYMENT_KEYWORDS = [
   { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
@@ -173,44 +176,37 @@ function processStatus143Logic(fields) {
 async function addCartTagIfPresent(leadId, noteText, env) {
   if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
   try {
-    const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+    await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ tags_to_add: [{ id: 415953 }] })
     });
-    if (updateRes.ok) console.log(`✅ Тег "корзина" добавлен к сделке ${leadId}`);
   } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
 }
 
-async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
+async function updatePaymentMethodFromNote(elementId, noteText, env) {
   try {
-    let text = "";
-    try { text = decodeURIComponent(noteText || "").toLowerCase(); }
-    catch (e) { text = (noteText || "").toLowerCase(); }
-    if (!text) return;
-
-    let enumId = null, foundKey = "", reason = "";
+    let text = decodeURIComponent(noteText || "").toLowerCase();
+    let enumId = null;
     const aiMatch = text.match(/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i);
     if (aiMatch && aiMatch[1]) {
       for (const item of PAYMENT_KEYWORDS) {
-        if (item.keys.some(k => aiMatch[1].includes(k))) { enumId = item.id; foundKey = aiMatch[1]; reason = "ИИ"; break; }
+        if (item.keys.some(k => aiMatch[1].includes(k))) { enumId = item.id; break; }
       }
     }
     if (!enumId) {
       for (const item of PAYMENT_KEYWORDS) {
         for (const key of item.keys) {
-          if (matchesKeyword(text, key)) { enumId = item.id; foundKey = key; reason = "Ключевое слово"; break; }
+          if (matchesKeyword(text, key)) { enumId = item.id; break; }
         }
         if (enumId) break;
       }
     }
     if (enumId) {
-      const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${elementId}`, {
+      await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${elementId}`, {
         method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] }] })
       });
-      if (res.ok) console.log(`✅ Способ оплаты обновлен: ${enumId}`);
-      else if (res.status === 403) console.log(`⚠️ ПРОПУСК: Нет прав на изменение поля "Способ оплаты" (403).`);
     }
   } catch (e) { console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`); }
 }
@@ -222,7 +218,7 @@ function hasPaymentKeyword(text) {
 }
 
 // ========================================================================
-// 🆕 ИНТЕГРАЦИЯ BITRIX24: ДЛИННЫЕ ЗВОНКИ (Оптимизированная версия)
+// 🆕 ИСПРАВЛЕННАЯ ИНТЕГРАЦИЯ BITRIX24
 // ========================================================================
 
 function formatDuration(sec) {
@@ -256,58 +252,59 @@ async function sendToBitrix(text, env) {
 }
 
 async function checkLongCallsAndNotify(leadId, env) {
-  try {
-    // Троттлинг: не чаще раза в 20 сек на сделку (защита от лимитов amoCRM ~7 req/сек)
-    const now = Date.now();
-    if (now - (recentChecks.get(leadId) || 0) < 20000) return;
-    recentChecks.set(leadId, now);
-    if (recentChecks.size > 500) recentChecks.clear();
+  // 🛡️ 1. Троттлинг: не чаще раза в 20 сек на сделку
+  const now = Date.now();
+  if (now - (recentChecks.get(leadId) || 0) < 20000) return;
+  recentChecks.set(leadId, now);
+  if (recentChecks.size > 500) recentChecks.clear();
 
+  try {
     const res = await fetch(
       `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?limit=250&order[id]=desc`,
       { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
     );
-    if (!res.ok) { console.log(`⚠️ notes ${leadId}: HTTP ${res.status}`); return; }
+    if (!res.ok) return;
     
     const data = await safeJsonParse(res);
     const notes = data?._embedded?.notes || [];
 
-    // Ищем уже отправленные звонки (по ID звонка в маркере)
+    // 🛡️ 2. Ищем маркеры ТОЛЬКО по regex [call:ID], без зависимости от эмодзи
     const notified = new Set();
     for (const n of notes) {
       const t = n.params?.text || "";
       const m = t.match(/\[call:(\d+)\]/);
-      if (t.includes(CALL_MARKER) && m) notified.add(m[1]);
+      if (m) notified.add(m[1]);
     }
 
     for (const note of notes) {
       if (!isCallNote(note)) continue;
       const duration = getCallDuration(note);
       if (duration <= LONG_CALL_SECONDS) continue;
-      if (notified.has(String(note.id))) continue;
+      
+      // 🛡️ 3. Защита от гонок: если уже в процессе или уже уведомлен — пропускаем
+      if (notified.has(String(note.id)) || inFlightCalls.has(note.id)) continue;
+      inFlightCalls.add(note.id);
 
       const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
-      const when = new Date((note.created_at || 0) * 1000)
-        .toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+      const when = new Date((note.created_at || 0) * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
-      // Bitrix IM понимает BBCode, а не HTML
       const text =
-        `📞 [B]Длинный звонок в amoCRM[/B]\n` +
-        `🔗 Сделка: [URL=https://${env.AMO_DOMAIN}/leads/detail/${leadId}]#${leadId}[/URL]\n` +
-        `⏱ Длительность: [B]${formatDuration(duration)}[/B]\n` +
-        `📞 Тип: ${incoming ? "Входящий" : "Исходящий"}\n` +
-        `🕐 Время: ${when}\n` +
-        `⚠️ Звонок превышает 8 минут!`;
+        `📞 Длинный звонок в amoCRM\n` +
+        `Сделка: ${leadId}\n` +
+        `Длительность: ${formatDuration(duration)}\n` +
+        `Время: ${when}`;
 
-      if (!(await sendToBitrix(text, env))) continue;
-
-      notified.add(String(note.id));
-      const markRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify([{ note_type: 4, params: { text: `${CALL_MARKER} [call:${note.id}]` } }])
-      });
-      console.log(`✅ Звонок ${note.id} (${duration}с), сделка ${leadId}; маркер: HTTP ${markRes.status}`);
+      if (await sendToBitrix(text, env)) {
+        const markerText = `${CALL_MARKER} [call:${note.id}]`;
+        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify([{ note_type: "common", params: { text: markerText } }])
+        });
+      } else {
+        // При ошибке Bitrix снимаем флаг, чтобы можно было повторить попытку
+        inFlightCalls.delete(note.id);
+      }
     }
   } catch (e) {
     console.log(`❌ checkLongCallsAndNotify: ${e.message}`);
@@ -332,15 +329,20 @@ export default {
       
       if (hasNotes) {
         const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
-        const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
         const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
         const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
         
         if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
-          ctx.waitUntil(checkLongCallsAndNotify(elementId, env)); // 🆕 ПРОВЕРКА ЗВОНКОВ
+          
+          // 🛡️ 4. НЕ реагируем на собственные маркеры. Проверяем звонки только если это реальный звонок (10,11,12,13)
+          const isOwnMarker = noteText.includes("[call:");
+          if (!isOwnMarker && ['10', '11', '12', '13'].includes(noteType)) {
+            ctx.waitUntil(checkLongCallsAndNotify(elementId, env));
+          }
+
           if (hasPaymentKeyword(noteText)) {
-            ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
+            ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, env));
           }
         }
         return new Response("OK");
@@ -348,7 +350,7 @@ export default {
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        ctx.waitUntil(checkLongCallsAndNotify(leadId, env)); // 🆕 ПРОВЕРКА ЗВОНКОВ
+        ctx.waitUntil(checkLongCallsAndNotify(leadId, env));
         
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
         if (!leadRes.ok) return new Response("OK");
@@ -401,8 +403,7 @@ export default {
           const patchBody = { custom_fields_values };
           if (newPrice != null) patchBody.price = newPrice;
           await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            method: "PATCH",
-            headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+            method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
             body: JSON.stringify(patchBody)
           });
         }
@@ -452,7 +453,6 @@ export default {
             else if (effectiveCategory === 974783) targetRequestType = 957159;
           }
           if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
-
           const promo = isPromo(leadData.name);
           const budgetUpdates = getBudgetUpdates(leadData, fields, promo);
           customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
@@ -500,16 +500,12 @@ export default {
       if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
         if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
         await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
+          method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(patchPayload)
         });
       }
-
       return new Response("OK");
-
     } catch (e) {
-      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
       return new Response("OK"); 
     }
   }
