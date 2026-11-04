@@ -1,5 +1,268 @@
+const RULES = [
+  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5276629, status: [47054479, 53410254, 53780378, 53410258, 143, 142] } },
+  { from: { pipeline: 5240944, status: 47069740 }, to: { pipeline: 5240944, status: [143] } }
+];
+
+const RESPONSIBLE_USER_NAMES = {
+  8789956: "Даниил Бровкин", 8517166: "Михаил Кострюков", 12669626: "Александра Абрамова",
+  12280618: "Анна Зернова", 13116242: "Максим Булыков", 13192790: "Мария Смирнова",
+  13284018: "Марк Артыков", 13465774: "Илья Буланов", 13249770: "Павел Николаев",
+  13349558: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
+  14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина"
+};
+
+const CORRECTION_FIELD_NAMES = {
+  983501: "Александра Абрамова", 983503: "Анна Зернова", 983505: "Максим Булыков",
+  983507: "Мария Смирнова", 983509: "Марк Артыков", 983511: "Илья Буланов",
+  983513: "Павел Николаев", 983515: "Светлана Маливанова", 983517: "Артем Сяднев",
+  983519: "Ирина Яровицина", 983521: "Александра Наумова", 983523: "Ярослава Демина",
+  983525: "Даниил Бровкин", 983527: "Михаил Кострюков", 983923: "Александра Потехина"
+};
+
+const DISCOUNT_NONE = 972987;
+const AIRPODS_MAX = 975969;
+const BUDGET_IPHONE_BY_PACKAGE = { 982597: 1000, 982599: 2000, 982601: 2500 };
+const BUDGET_AKSY = { 972987: 1000, 981917: 700, 981919: 450, 972989: 450, 976369: 950, 976371: 950, 976373: 850, 976375: 450 };
+const BUDGET_HARDWARE = { 972987: 2300, 981917: 1610, 981919: 1035, 972989: 1035, 976369: 2185, 976371: 2185, 976373: 1955, 976375: 1035 };
+const BUDGET_BU = { 972987: 2500, 981917: 1750, 981919: 1125, 972989: 1125, 976369: 2375, 976371: 2375, 976373: 2125, 976375: 1125 };
+
+const ACCESSORIES = [975967, 975969, 975971, 976049, 976051, 976053, 976055, 983737, 983741, 983743];
+const HARDWARE_MODELS = [975973, 975975, 975977, 975981, 975983, 980173, 983739];
+const ANDROID_MODELS = [975979, 976893];
+const IPHONES = [
+  975985, 975987, 975989, 975991, 975993, 975995, 975997, 975999,
+  976001, 976003, 976005, 976007, 976009, 976011, 976013, 976015,
+  976017, 976019, 976021, 976023, 976025, 976027, 976029, 976031,
+  976033, 976035, 976037, 976039, 976041, 976043, 976045, 976047,
+  976887, 976889, 976891, 977077, 978049, 978051, 978053, 978055,
+  979183, 981729, 981731, 981733, 981735, 982255,
+  983885, 983887, 983889, 983891
+];
+
+const TARGET_PIPELINE_OLD = 5276629;
+const TARGET_STATUS_OLD = 143;
+const FIELD_REQUEST_TYPE = 466253;
+const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
+const NEW_TYPE_VALUE = 931811;
+const FIELD_PAYMENT_METHOD = 574905;
+
+// 🆕 НАСТРОЙКИ ДЛЯ BITRIX И ДЛИННЫХ ЗВОНКОВ
+const LONG_CALL_SECONDS = 480;
+const BITRIX_CHAT_ID = 19127;
+const CALL_MARKER = "📞 Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
+const recentChecks = new Map(); // защита от шквала вебхуков по одной сделке
+
+const PAYMENT_KEYWORDS = [
+  { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
+  { keys: ['кредит', 'кредитом', 'кредиту', 'кредите'], id: 973117 },
+  { keys: ['наличные', 'наличка', 'нал', 'налом', 'наличными', 'наличкой'], id: 973115 },
+  { keys: ['карта', 'картой', 'карте', 'карту'], id: 977839 },
+  { keys: ['долями', 'долям'], id: 977071 }
+];
+
+function matchesKeyword(text, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(^|[^а-яёa-z0-9])${escaped}([^а-яёa-z0-9]|$)`, 'i');
+  return regex.test(text);
+}
+
+async function safeJsonParse(response) {
+  try {
+    const text = await response.text();
+    return (text && text.trim() !== "") ? JSON.parse(text) : null;
+  } catch (e) { return null; }
+}
+
+function deriveCategory(type, model, currentCategory) {
+  let target = currentCategory;
+  if (type === 938373) target = 974781;
+  else if (type === 957159) target = 974783;
+  else if (type === 931809) {
+    if (IPHONES.includes(model)) target = 974775;
+    else if (ACCESSORIES.includes(model)) target = 974777;
+    else if (HARDWARE_MODELS.includes(model)) target = 974779;
+    else if (ANDROID_MODELS.includes(model)) target = 982623;
+  }
+  return target;
+}
+
+function derivePackage(type, model, currentPackage) {
+  let target = currentPackage;
+  if (type === 938373) target = 982611;
+  else if (type === 957159) target = 982607;
+  else if (type === 931809) {
+    if (ACCESSORIES.includes(model)) target = 982613;
+    else if (HARDWARE_MODELS.includes(model)) target = 982619;
+  }
+  return target;
+}
+
+function isPromo(leadName) { return leadName && leadName.toLowerCase().includes("акция"); }
+
+function calcBudget(category, model, discount, soldPackage, promo = false) {
+  let budget = null, forceNoDiscount = false, multiplier = promo ? 2 : 1;
+  if (category === 974775) {
+    forceNoDiscount = true;
+    const base = BUDGET_IPHONE_BY_PACKAGE[soldPackage];
+    budget = base != null ? base * multiplier : null;
+  } else if (category === 974783) { budget = 1500; } 
+  else {
+    let table = null;
+    if (category === 974777) table = (model === AIRPODS_MAX) ? BUDGET_HARDWARE : BUDGET_AKSY;
+    else if (category === 974779) table = BUDGET_HARDWARE;
+    else if (category === 974781 || category === 982623) table = BUDGET_BU;
+    if (table && discount != null) {
+      const base = table[discount];
+      budget = base != null ? base * multiplier : null;
+    }
+  }
+  return { budget, forceNoDiscount };
+}
+
+function getCorrectionUpdate(fields, responsibleId) {
+  let currentCorrectionId = null, currentCorrectionName = null;
+  for (const field of fields) {
+    if (field.field_id === 582983 && field.values?.length) {
+      currentCorrectionId = field.values[0].enum_id || field.values[0].value;
+      currentCorrectionName = CORRECTION_FIELD_NAMES[currentCorrectionId] || field.values[0].value;
+    }
+  }
+  const responsibleName = RESPONSIBLE_USER_NAMES[responsibleId];
+  if (responsibleName && currentCorrectionName && responsibleName.trim().toLowerCase() === currentCorrectionName.trim().toLowerCase() && currentCorrectionId !== 983499) {
+    return { field_id: 582983, values: [{ enum_id: 983499 }] };
+  }
+  return null;
+}
+
+function getBudgetUpdates(lead, fields, promo) {
+  const custom_fields_values = [];
+  let newPrice = null, type = null, model = null, currentDiscount = null, currentSoldPackage = null, currentCategory = null;
+  for (const field of fields) {
+    if (!field.values?.length) continue;
+    if (field.field_id === 466253) type = field.values[0].enum_id;
+    if (field.field_id === 577689) model = field.values[0].enum_id;
+    if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+    if (field.field_id === 574827) currentDiscount = field.values[0].enum_id;
+    if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
+  }
+  const effectiveCategory = deriveCategory(type, model, currentCategory);
+  const { budget, forceNoDiscount } = calcBudget(effectiveCategory, model, currentDiscount, currentSoldPackage, promo);
+  if (forceNoDiscount && currentDiscount != null && currentDiscount !== DISCOUNT_NONE) {
+    custom_fields_values.push({ field_id: 574827, values: [{ enum_id: DISCOUNT_NONE }] });
+  }
+  if (budget != null && lead.price !== budget) newPrice = budget;
+  return { custom_fields_values, newPrice };
+}
+
+function processStatus143Logic(fields) {
+  const custom_fields_values = [];
+  let requestTypeId = null, rejectionReasonId = null;
+  for (const field of fields) {
+    if (!field.values?.length) continue;
+    if (field.field_id === 466253) requestTypeId = field.values[0].enum_id;
+    if (field.field_id === 573457) rejectionReasonId = field.values[0].enum_id;
+  }
+  if (requestTypeId === 978137 && rejectionReasonId !== 970329 && rejectionReasonId !== 976779 && rejectionReasonId !== 977497) {
+    custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
+  } else if (requestTypeId === 931811 && rejectionReasonId !== 970313) {
+    custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970313 }] });
+  }
+  return custom_fields_values;
+}
+
+async function addCartTagIfPresent(leadId, noteText, env) {
+  if (!noteText.includes("ЗАКАЗ ИЗ КОРЗИНЫ")) return;
+  try {
+    const updateRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ tags_to_add: [{ id: 415953 }] })
+    });
+    if (updateRes.ok) console.log(`✅ Тег "корзина" добавлен к сделке ${leadId}`);
+  } catch (e) { console.log(`❌ Ошибка тега корзины: ${e.message}`); }
+}
+
+async function updatePaymentMethodFromNote(elementId, noteText, elementType, env) {
+  try {
+    let text = "";
+    try { text = decodeURIComponent(noteText || "").toLowerCase(); }
+    catch (e) { text = (noteText || "").toLowerCase(); }
+    if (!text) return;
+
+    let enumId = null, foundKey = "", reason = "";
+    const aiMatch = text.match(/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i);
+    if (aiMatch && aiMatch[1]) {
+      for (const item of PAYMENT_KEYWORDS) {
+        if (item.keys.some(k => aiMatch[1].includes(k))) { enumId = item.id; foundKey = aiMatch[1]; reason = "ИИ"; break; }
+      }
+    }
+    if (!enumId) {
+      for (const item of PAYMENT_KEYWORDS) {
+        for (const key of item.keys) {
+          if (matchesKeyword(text, key)) { enumId = item.id; foundKey = key; reason = "Ключевое слово"; break; }
+        }
+        if (enumId) break;
+      }
+    }
+    if (enumId) {
+      const res = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${elementId}`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ custom_fields_values: [{ field_id: FIELD_PAYMENT_METHOD, values: [{ enum_id: enumId }] }] })
+      });
+      if (res.ok) console.log(`✅ Способ оплаты обновлен: ${enumId}`);
+      else if (res.status === 403) console.log(`⚠️ ПРОПУСК: Нет прав на изменение поля "Способ оплаты" (403).`);
+    }
+  } catch (e) { console.log(`❌ Ошибка updatePaymentMethod: ${e.message}`); }
+}
+
+function hasPaymentKeyword(text) {
+  const lower = text.toLowerCase();
+  if (/способ\s+оплаты\s*:\s*(наличн|карт|кредит|рассрочк|долям)/i.test(lower)) return true;
+  return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
+}
+
+// ========================================================================
+// 🆕 ИНТЕГРАЦИЯ BITRIX24: ДЛИННЫЕ ЗВОНКИ (Оптимизированная версия)
+// ========================================================================
+
+function formatDuration(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function getCallDuration(note) {
+  const d = Number(note.duration ?? note.params?.duration ?? 0);
+  return Number.isFinite(d) ? d : 0;
+}
+
+function isCallNote(note) {
+  return String(note.note_type ?? "").toLowerCase().includes("call") ||
+         String(note.type ?? "").toLowerCase().includes("call");
+}
+
+async function sendToBitrix(text, env) {
+  const base = env.BITRIX_WEBHOOK_URL.replace(/\/+$/, "");
+  const res = await fetch(`${base}/im.message.add.json`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ CHAT_ID: BITRIX_CHAT_ID, MESSAGE: text })
+  });
+  const data = await safeJsonParse(res);
+  if (!res.ok || !data || data.error || !data.result) {
+    console.log(`❌ Bitrix: HTTP ${res.status} ${JSON.stringify(data).substring(0, 250)}`);
+    return false;
+  }
+  return true;
+}
+
 async function checkLongCallsAndNotify(leadId, env) {
   try {
+    // Троттлинг: не чаще раза в 20 сек на сделку (защита от лимитов amoCRM ~7 req/сек)
+    const now = Date.now();
+    if (now - (recentChecks.get(leadId) || 0) < 20000) return;
+    recentChecks.set(leadId, now);
+    if (recentChecks.size > 500) recentChecks.clear();
+
     const res = await fetch(
       `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?limit=250&order[id]=desc`,
       { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
@@ -8,71 +271,246 @@ async function checkLongCallsAndNotify(leadId, env) {
     
     const data = await safeJsonParse(res);
     const notes = data?._embedded?.notes || [];
-    console.log(`📋 Сделка ${leadId}: всего примечаний ${notes.length}`);
 
     // Ищем уже отправленные звонки (по ID звонка в маркере)
     const notified = new Set();
     for (const n of notes) {
       const t = n.params?.text || "";
       const m = t.match(/\[call:(\d+)\]/);
-      if (t.includes(CALL_MARKER) && m) {
-        notified.add(m[1]);
-        console.log(`🔍 Найден маркер для звонка ID=${m[1]}`);
-      }
+      if (t.includes(CALL_MARKER) && m) notified.add(m[1]);
     }
-    console.log(`🔍 Уже уведомлённых звонков: ${notified.size}`);
 
     for (const note of notes) {
       if (!isCallNote(note)) continue;
       const duration = getCallDuration(note);
-      console.log(`📞 Звонок ID=${note.id}, type=${note.type}, note_type=${note.note_type}, duration=${duration}с`);
-      
-      if (duration <= LONG_CALL_SECONDS) {
-        console.log(`⏭️ Звонок ${note.id} короче 8 мин, пропускаем`);
-        continue;
-      }
-      
-      if (notified.has(String(note.id))) {
-        console.log(`✅ Звонок ${note.id} уже уведомлён (найден маркер), пропускаем`);
-        continue;
-      }
+      if (duration <= LONG_CALL_SECONDS) continue;
+      if (notified.has(String(note.id))) continue;
 
-      console.log(`🚨 Звонок ${note.id} (${duration}с) — ОТПРАВЛЯЕМ В BITRIX!`);
-      
       const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
       const when = new Date((note.created_at || 0) * 1000)
         .toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
-      // 🆕 ПРОСТОЙ ТЕКСТ БЕЗ BBCODE
+      // Bitrix IM понимает BBCode, а не HTML
       const text =
-        `📞 Длинный звонок в amoCRM\n` +
-        `Сделка: ${leadId}\n` +
-        `Длительность: ${formatDuration(duration)}\n` +
-        `Время: ${when}`;
+        `📞 [B]Длинный звонок в amoCRM[/B]\n` +
+        `🔗 Сделка: [URL=https://${env.AMO_DOMAIN}/leads/detail/${leadId}]#${leadId}[/URL]\n` +
+        `⏱ Длительность: [B]${formatDuration(duration)}[/B]\n` +
+        `📞 Тип: ${incoming ? "Входящий" : "Исходящий"}\n` +
+        `🕐 Время: ${when}\n` +
+        `⚠️ Звонок превышает 8 минут!`;
 
-      if (!(await sendToBitrix(text, env))) {
-        console.log(`❌ Не удалось отправить в Bitrix, маркер не добавляем`);
-        continue;
-      }
+      if (!(await sendToBitrix(text, env))) continue;
 
-      // 🆕 ДОБАВЛЯЕМ МАРКЕР С ПРОВЕРКОЙ ОТВЕТА
-      const markerText = `${CALL_MARKER} [call:${note.id}]`;
-      console.log(`📝 Добавляем маркер: "${markerText}"`);
-      
+      notified.add(String(note.id));
       const markRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify([{ note_type: "common", params: { text: markerText } }])
+        body: JSON.stringify([{ note_type: 4, params: { text: `${CALL_MARKER} [call:${note.id}]` } }])
       });
-      
-      const markText = await markRes.text();
-      console.log(`✅ Маркер добавлен: HTTP ${markRes.status}, ответ: ${markText.substring(0, 300)}`);
-      
-      if (!markRes.ok) {
-        console.log(`❌ ОШИБКА: маркер НЕ добавлен! Статус: ${markRes.status}`);
-      }
+      console.log(`✅ Звонок ${note.id} (${duration}с), сделка ${leadId}; маркер: HTTP ${markRes.status}`);
     }
   } catch (e) {
     console.log(`❌ checkLongCallsAndNotify: ${e.message}`);
   }
 }
+
+// ========================================================================
+// ГЛАВНЫЙ ОБРАБОТЧИК ВЕБХУКОВ
+// ========================================================================
+
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      if (!env?.AMO_DOMAIN || !env?.AMO_TOKEN) return new Response("OK");
+
+      const rawBody = await request.text();
+      const params = new URLSearchParams(rawBody);
+
+      const hasNotes = params.has("leads[note][0][note][element_id]") || params.has("notes[add][0][element_id]");
+      const hasStatus = params.has("leads[status][0][id]");
+      const hasUpdate = params.has("leads[update][0][id]");
+      
+      if (hasNotes) {
+        const elementId = Number(params.get("leads[note][0][note][element_id]") || params.get("notes[add][0][element_id]"));
+        const elementType = params.get("leads[note][0][note][element_type]") || params.get("notes[add][0][element_type]");
+        const noteType = params.get("leads[note][0][note][note_type]") || params.get("notes[add][0][note_type]");
+        const noteText = params.get("leads[note][0][note][text]") || params.get("notes[add][0][text]") || "";
+        
+        if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
+          ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
+          ctx.waitUntil(checkLongCallsAndNotify(elementId, env)); // 🆕 ПРОВЕРКА ЗВОНКОВ
+          if (hasPaymentKeyword(noteText)) {
+            ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
+          }
+        }
+        return new Response("OK");
+      }
+
+      if (hasUpdate) {
+        const leadId = Number(params.get("leads[update][0][id]"));
+        ctx.waitUntil(checkLongCallsAndNotify(leadId, env)); // 🆕 ПРОВЕРКА ЗВОНКОВ
+        
+        const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
+        if (!leadRes.ok) return new Response("OK");
+        const lead = await safeJsonParse(leadRes);
+        if (!lead) return new Response("OK");
+
+        const fields = lead.custom_fields_values || [];
+        let type = null, model = null, currentCategory = null, currentPackage = null, currentSoldPackage = null;
+        for (const field of fields) {
+          if (!field.values?.length) continue;
+          if (field.field_id === 466253) type = field.values[0].enum_id;
+          if (field.field_id === 577689) model = field.values[0].enum_id;
+          if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+          if (field.field_id === 582429) currentPackage = field.values[0].enum_id;
+          if (field.field_id === 582431) currentSoldPackage = field.values[0].enum_id;
+        }
+
+        const targetCategory = deriveCategory(type, model, currentCategory);
+        const targetPackage = derivePackage(type, model, currentPackage);
+        let soldPackage = null;
+        if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
+          if (currentPackage === 982607) soldPackage = 982609;
+          else if (currentPackage === 982611) soldPackage = 982617;
+          else if (currentPackage === 982613) soldPackage = 982615;
+          else if (currentPackage === 982619) soldPackage = 982621;
+        }
+
+        const custom_fields_values = [];
+        if (currentCategory !== targetCategory) custom_fields_values.push({ field_id: 575965, values: [{ enum_id: targetCategory }] });
+        if (targetPackage && currentPackage !== targetPackage) custom_fields_values.push({ field_id: 582429, values: [{ enum_id: targetPackage }] });
+        if (soldPackage && currentSoldPackage !== soldPackage) custom_fields_values.push({ field_id: 582431, values: [{ enum_id: soldPackage }] });
+
+        const correctionUpdate = getCorrectionUpdate(fields, lead.responsible_user_id);
+        if (correctionUpdate) custom_fields_values.push(correctionUpdate);
+
+        let newPrice = null;
+        if (lead.pipeline_id === 5276629 && lead.status_id === 142) {
+          if (!lead.name || !lead.name.toLowerCase().includes("исключение")) {
+            const promo = isPromo(lead.name);
+            const budgetUpdates = getBudgetUpdates(lead, fields, promo);
+            custom_fields_values.push(...budgetUpdates.custom_fields_values);
+            newPrice = budgetUpdates.newPrice;
+          }
+        }
+        if (lead.pipeline_id === 5276629 && lead.status_id === 143) {
+          custom_fields_values.push(...processStatus143Logic(fields));
+        }
+
+        if (custom_fields_values.length > 0 || newPrice != null) {
+          const patchBody = { custom_fields_values };
+          if (newPrice != null) patchBody.price = newPrice;
+          await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+            method: "PATCH",
+            headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
+            body: JSON.stringify(patchBody)
+          });
+        }
+        return new Response("OK");
+      }
+
+      if (!hasStatus) return new Response("OK");
+
+      const leadId = Number(params.get("leads[status][0][id]"));
+      const pipelineId = Number(params.get("leads[status][0][pipeline_id]"));
+      const newStatusId = Number(params.get("leads[status][0][status_id]"));
+      const oldStatusId = Number(params.get("leads[status][0][old_status_id]"));
+      const oldPipelineId = Number(params.get("leads[status][0][old_pipeline_id]")) || 5240944;
+      const userId = Number(params.get("leads[status][0][modified_user_id]") || params.get("leads[status][0][modified_by]"));
+
+      if (!oldStatusId || oldStatusId === newStatusId) return new Response("OK");
+
+      const leadDetailsRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
+      if (!leadDetailsRes.ok) return new Response("OK");
+      const leadData = await safeJsonParse(leadDetailsRes);
+      if (!leadData) return new Response("OK");
+
+      const fields = leadData.custom_fields_values || [];
+      const actualResponsibleId = leadData.responsible_user_id;
+      let type = null, model = null, currentCategory = null;
+      for (const field of fields) {
+        if (!field.values?.length) continue;
+        if (field.field_id === 466253) type = field.values[0].enum_id;
+        if (field.field_id === 577689) model = field.values[0].enum_id;
+        if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
+      }
+
+      const patchPayload = {};
+      const customFieldsUpdates = [];
+
+      if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
+        customFieldsUpdates.push({ field_id: 573457, values: null });
+      }
+
+      if (pipelineId === 5276629 && newStatusId === 142) {
+        if (!leadData.name || !leadData.name.toLowerCase().includes("исключение")) {
+          const effectiveCategory = deriveCategory(type, model, currentCategory);
+          let targetRequestType = null;
+          if (effectiveCategory) {
+            if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
+            else if (effectiveCategory === 974781) targetRequestType = 938373;
+            else if (effectiveCategory === 974783) targetRequestType = 957159;
+          }
+          if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
+
+          const promo = isPromo(leadData.name);
+          const budgetUpdates = getBudgetUpdates(leadData, fields, promo);
+          customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
+          if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
+        }
+      }
+
+      if (pipelineId === 5276629 && newStatusId === 143) {
+        customFieldsUpdates.push(...processStatus143Logic(fields));
+        customFieldsUpdates.push({ field_id: 573459, values: null });
+        customFieldsUpdates.push({ field_id: 578879, values: null });
+        patchPayload.price = 0;
+      }
+
+      const matchedRule = RULES.find(rule =>
+        rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
+        rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
+      );
+
+      if (matchedRule) {
+        if (userId && actualResponsibleId !== userId) {
+          patchPayload.responsible_user_id = userId;
+        }
+        if (newStatusId === 143 && type) {
+          let targetPipeline = null;
+          if (type === 938315) targetPipeline = 5240944;
+          else if (type === 982245) targetPipeline = 5240944;
+          else if (type === 978137) targetPipeline = 5276629;
+          else if (type === 931811) targetPipeline = 5276629;
+
+          if (targetPipeline && targetPipeline !== pipelineId) {
+            patchPayload.pipeline_id = targetPipeline;
+            patchPayload.status_id = 143;
+          }
+        }
+      }
+
+      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
+        patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
+      }
+
+      const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
+      if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
+
+      if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
+        if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
+        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(patchPayload)
+        });
+      }
+
+      return new Response("OK");
+
+    } catch (e) {
+      console.log(`💥 КРИТИЧЕСКАЯ ОШИБКА: ${e.message}`);
+      return new Response("OK"); 
+    }
+  }
+};
