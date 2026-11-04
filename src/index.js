@@ -285,13 +285,33 @@ async function checkLongCallsAndNotify(leadId, env) {
       if (notified.has(String(note.id)) || inFlightCalls.has(note.id)) continue;
       inFlightCalls.add(note.id);
 
+      // 🆕 4. ПОЛУЧАЕМ ИМЯ ОТВЕТСТВЕННОГО СОТРУДНИКА
+      let responsibleName = "Неизвестный сотрудник";
+      try {
+        const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+        });
+        if (leadRes.ok) {
+          const leadData = await safeJsonParse(leadRes);
+          const respId = leadData?.responsible_user_id;
+          if (respId && RESPONSIBLE_USER_NAMES[respId]) {
+            responsibleName = RESPONSIBLE_USER_NAMES[respId];
+          } else if (respId) {
+            responsibleName = `Сотрудник (ID: ${respId})`;
+          }
+        }
+      } catch (e) {
+        console.log(`⚠️ Не удалось получить ответственного: ${e.message}`);
+      }
+
       const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
       const when = new Date((note.created_at || 0) * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
-      // 🆕 ИЗМЕНЕННЫЙ ФОРМАТ С ПРЯМОЙ ССЫЛКОЙ
+      // 🆕 5. НОВЫЙ ФОРМАТ С ИМЕНЕМ СОТРУДНИКА
       const text =
         `📞 Длинный звонок в amoCRM\n` +
         `https://${env.AMO_DOMAIN}/leads/detail/${leadId}\n` +
+        `${responsibleName}\n` +
         `Длительность: ${formatDuration(duration)}\n` +
         `Время: ${when}`;
 
@@ -336,7 +356,7 @@ export default {
         if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           
-          // 🛡️ 4. НЕ реагируем на собственные маркеры. Проверяем звонки только если это реальный звонок (10,11,12,13)
+          // 🛡️ НЕ реагируем на собственные маркеры. Проверяем звонки только если это реальный звонок (10,11,12,13)
           const isOwnMarker = noteText.includes("[call:");
           if (!isOwnMarker && ['10', '11', '12', '13'].includes(noteType)) {
             ctx.waitUntil(checkLongCallsAndNotify(elementId, env));
