@@ -9,7 +9,7 @@ const RESPONSIBLE_USER_NAMES = {
   13284018: "Марк Артыков", 13465774: "Илья Буланов", 13249770: "Павел Николаев",
   13349558: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
   14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина",
-  14407370: "Иван Михайлович", 14402594: "Анастасия Панова" // 🆕 НОВЫЕ СОТРУДНИКИ
+  14407370: "Иван Михайлович", 14402594: "Анастасия Панова"
 };
 
 const CORRECTION_FIELD_NAMES = {
@@ -18,7 +18,7 @@ const CORRECTION_FIELD_NAMES = {
   983513: "Павел Николаев", 983515: "Светлана Маливанова", 983517: "Артем Сяднев",
   983519: "Ирина Яровицина", 983521: "Александра Наумова", 983523: "Ярослава Демина",
   983525: "Даниил Бровкин", 983527: "Михаил Кострюков", 983923: "Александра Потехина",
-  984301: "Иван Михайлович", 984299: "Анастасия Панова" // 🆕 НОВЫЕ СОТРУДНИКИ (для логики корректировки)
+  984301: "Иван Михайлович", 984299: "Анастасия Панова"
 };
 
 const DISCOUNT_NONE = 972987;
@@ -48,8 +48,9 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
+// 🆕 МАССИВ ID ЧАТОВ ДЛЯ РАССЫЛКИ
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_ID = 19127;
+const BITRIX_CHAT_IDS = [19127, 3521]; 
 const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 
 const recentChecks = new Map();
@@ -232,16 +233,17 @@ function isCallNote(note) {
          String(note.type ?? "").toLowerCase().includes("call");
 }
 
-async function sendToBitrix(text, env) {
+// 🆕 Функция теперь принимает chatId как аргумент
+async function sendToBitrix(text, env, chatId) {
   const base = env.BITRIX_WEBHOOK_URL.replace(/\/+$/, "");
   const res = await fetch(`${base}/im.message.add.json`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ CHAT_ID: BITRIX_CHAT_ID, MESSAGE: text })
+    body: JSON.stringify({ CHAT_ID: chatId, MESSAGE: text })
   });
   const data = await safeJsonParse(res);
   if (!res.ok || !data || data.error || !data.result) {
-    console.log(`❌ Bitrix: HTTP ${res.status} ${JSON.stringify(data).substring(0, 250)}`);
+    console.log(`❌ Bitrix (чат ${chatId}): HTTP ${res.status} ${JSON.stringify(data).substring(0, 250)}`);
     return false;
   }
   return true;
@@ -306,7 +308,16 @@ async function checkLongCallsAndNotify(leadId, env) {
         `Длительность: ${formatDuration(duration)}\n` +
         `Время: ${when}`;
 
-      if (await sendToBitrix(text, env)) {
+      // 🆕 Отправляем во ВСЕ чаты из массива
+      let allSent = true;
+      for (const chatId of BITRIX_CHAT_IDS) {
+        if (!(await sendToBitrix(text, env, chatId))) {
+          allSent = false;
+        }
+      }
+
+      // Маркер добавляем только если сообщение успешно ушло во все чаты
+      if (allSent) {
         const markerText = `${CALL_MARKER} [call:${note.id}]`;
         await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
           method: "POST",
@@ -314,6 +325,7 @@ async function checkLongCallsAndNotify(leadId, env) {
           body: JSON.stringify([{ note_type: "common", params: { text: markerText } }])
         });
       } else {
+        // Если хотя бы один чат не принял сообщение, снимаем блокировку для повторной попытки
         inFlightCalls.delete(note.id);
       }
     }
