@@ -8,7 +8,8 @@ const RESPONSIBLE_USER_NAMES = {
   12280618: "Анна Зернова", 13116242: "Максим Булыков", 13192790: "Мария Смирнова",
   13284018: "Марк Артыков", 13465774: "Илья Буланов", 13249770: "Павел Николаев",
   13349558: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
-  14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина"
+  14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина",
+  14407370: "Иван Михайлович", 14402594: "Анастасия Панова" // 🆕 НОВЫЕ СОТРУДНИКИ
 };
 
 const CORRECTION_FIELD_NAMES = {
@@ -16,7 +17,8 @@ const CORRECTION_FIELD_NAMES = {
   983507: "Мария Смирнова", 983509: "Марк Артыков", 983511: "Илья Буланов",
   983513: "Павел Николаев", 983515: "Светлана Маливанова", 983517: "Артем Сяднев",
   983519: "Ирина Яровицина", 983521: "Александра Наумова", 983523: "Ярослава Демина",
-  983525: "Даниил Бровкин", 983527: "Михаил Кострюков", 983923: "Александра Потехина"
+  983525: "Даниил Бровкин", 983527: "Михаил Кострюков", 983923: "Александра Потехина",
+  984301: "Иван Михайлович", 984299: "Анастасия Панова" // 🆕 НОВЫЕ СОТРУДНИКИ (для логики корректировки)
 };
 
 const DISCOUNT_NONE = 972987;
@@ -46,14 +48,12 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
-// 🆕 ИСПРАВЛЕННЫЕ НАСТРОЙКИ (БЕЗ ЭМОДЗИ В МАРКЕРЕ)
 const LONG_CALL_SECONDS = 480;
 const BITRIX_CHAT_ID = 19127;
 const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 
-// 🆕 ЗАЩИТА ОТ ГОНОК И СПАМА
-const recentChecks = new Map(); // Троттлинг 20 сек на сделку
-const inFlightCalls = new Set(); // Защита от параллельных вебхуков
+const recentChecks = new Map();
+const inFlightCalls = new Set();
 
 const PAYMENT_KEYWORDS = [
   { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
@@ -217,10 +217,6 @@ function hasPaymentKeyword(text) {
   return PAYMENT_KEYWORDS.some(item => item.keys.some(key => matchesKeyword(lower, key)));
 }
 
-// ========================================================================
-// 🆕 ИСПРАВЛЕННАЯ ИНТЕГРАЦИЯ BITRIX24
-// ========================================================================
-
 function formatDuration(sec) {
   const m = Math.floor(sec / 60), s = sec % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
@@ -252,7 +248,6 @@ async function sendToBitrix(text, env) {
 }
 
 async function checkLongCallsAndNotify(leadId, env) {
-  // 🛡️ 1. Троттлинг: не чаще раза в 20 сек на сделку
   const now = Date.now();
   if (now - (recentChecks.get(leadId) || 0) < 20000) return;
   recentChecks.set(leadId, now);
@@ -268,7 +263,6 @@ async function checkLongCallsAndNotify(leadId, env) {
     const data = await safeJsonParse(res);
     const notes = data?._embedded?.notes || [];
 
-    // 🛡️ 2. Ищем маркеры ТОЛЬКО по regex [call:ID], без зависимости от эмодзи
     const notified = new Set();
     for (const n of notes) {
       const t = n.params?.text || "";
@@ -281,11 +275,9 @@ async function checkLongCallsAndNotify(leadId, env) {
       const duration = getCallDuration(note);
       if (duration <= LONG_CALL_SECONDS) continue;
       
-      // 🛡️ 3. Защита от гонок: если уже в процессе или уже уведомлен — пропускаем
       if (notified.has(String(note.id)) || inFlightCalls.has(note.id)) continue;
       inFlightCalls.add(note.id);
 
-      // 🆕 4. ПОЛУЧАЕМ ИМЯ ОТВЕТСТВЕННОГО СОТРУДНИКА
       let responsibleName = "Неизвестный сотрудник";
       try {
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
@@ -307,7 +299,6 @@ async function checkLongCallsAndNotify(leadId, env) {
       const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
       const when = new Date((note.created_at || 0) * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
-      // 🆕 5. НОВЫЙ ФОРМАТ С ИМЕНЕМ СОТРУДНИКА
       const text =
         `📞 Длинный звонок в amoCRM\n` +
         `https://${env.AMO_DOMAIN}/leads/detail/${leadId}\n` +
@@ -323,7 +314,6 @@ async function checkLongCallsAndNotify(leadId, env) {
           body: JSON.stringify([{ note_type: "common", params: { text: markerText } }])
         });
       } else {
-        // При ошибке Bitrix снимаем флаг, чтобы можно было повторить попытку
         inFlightCalls.delete(note.id);
       }
     }
@@ -331,10 +321,6 @@ async function checkLongCallsAndNotify(leadId, env) {
     console.log(`❌ checkLongCallsAndNotify: ${e.message}`);
   }
 }
-
-// ========================================================================
-// ГЛАВНЫЙ ОБРАБОТЧИК ВЕБХУКОВ
-// ========================================================================
 
 export default {
   async fetch(request, env, ctx) {
@@ -356,7 +342,6 @@ export default {
         if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
           
-          // 🛡️ НЕ реагируем на собственные маркеры. Проверяем звонки только если это реальный звонок (10,11,12,13)
           const isOwnMarker = noteText.includes("[call:");
           if (!isOwnMarker && ['10', '11', '12', '13'].includes(noteType)) {
             ctx.waitUntil(checkLongCallsAndNotify(elementId, env));
