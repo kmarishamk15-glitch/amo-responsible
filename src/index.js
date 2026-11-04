@@ -288,9 +288,10 @@ async function checkLongCallsAndNotify(leadId, env) {
       const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
       const when = new Date((note.created_at || 0) * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
+      // 🆕 ИЗМЕНЕННЫЙ ФОРМАТ С ПРЯМОЙ ССЫЛКОЙ
       const text =
         `📞 Длинный звонок в amoCRM\n` +
-        `Сделка: ${leadId}\n` +
+        `https://${env.AMO_DOMAIN}/leads/detail/${leadId}\n` +
         `Длительность: ${formatDuration(duration)}\n` +
         `Время: ${when}`;
 
