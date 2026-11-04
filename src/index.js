@@ -48,7 +48,7 @@ const FIELD_PAYMENT_METHOD = 574905;
 
 // 🆕 НАСТРОЙКИ ДЛЯ BITRIX И ДЛИННЫХ ЗВОНКОВ
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_ID = 461;
+const BITRIX_CHAT_ID = 19127;
 const CALL_MARKER = "📞 Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 const recentChecks = new Map(); // защита от шквала вебхуков по одной сделке
 
