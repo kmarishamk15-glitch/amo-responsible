@@ -48,9 +48,8 @@ const FIELD_PAYMENT_METHOD = 574905;
 
 // 🆕 НАСТРОЙКИ ДЛЯ BITRIX И ДЛИННЫХ ЗВОНКОВ
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_ID = 19127;
+const BITRIX_CHAT_ID = 461;
 const CALL_MARKER = "📞 Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
-const recentChecks = new Map(); // защита от шквала вебхуков по одной сделке
 
 const PAYMENT_KEYWORDS = [
   { keys: ['рассрочка', 'рассрочкой', 'рассрочке', 'рассрочку'], id: 973117 },
@@ -222,7 +221,7 @@ function hasPaymentKeyword(text) {
 }
 
 // ========================================================================
-// 🆕 ИНТЕГРАЦИЯ BITRIX24: ДЛИННЫЕ ЗВОНКИ (Оптимизированная версия)
+// 🆕 ИНТЕГРАЦИЯ BITRIX24: ДЛИННЫЕ ЗВОНКИ
 // ========================================================================
 
 function formatDuration(sec) {
@@ -257,12 +256,6 @@ async function sendToBitrix(text, env) {
 
 async function checkLongCallsAndNotify(leadId, env) {
   try {
-    // Троттлинг: не чаще раза в 20 сек на сделку (защита от лимитов amoCRM ~7 req/сек)
-    const now = Date.now();
-    if (now - (recentChecks.get(leadId) || 0) < 20000) return;
-    recentChecks.set(leadId, now);
-    if (recentChecks.size > 500) recentChecks.clear();
-
     const res = await fetch(
       `https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes?limit=250&order[id]=desc`,
       { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } }
@@ -271,43 +264,69 @@ async function checkLongCallsAndNotify(leadId, env) {
     
     const data = await safeJsonParse(res);
     const notes = data?._embedded?.notes || [];
+    console.log(`📋 Сделка ${leadId}: всего примечаний ${notes.length}`);
 
     // Ищем уже отправленные звонки (по ID звонка в маркере)
     const notified = new Set();
     for (const n of notes) {
       const t = n.params?.text || "";
       const m = t.match(/\[call:(\d+)\]/);
-      if (t.includes(CALL_MARKER) && m) notified.add(m[1]);
+      if (t.includes(CALL_MARKER) && m) {
+        notified.add(m[1]);
+        console.log(`🔍 Найден маркер для звонка ID=${m[1]}`);
+      }
     }
+    console.log(` Уже уведомлённых звонков: ${notified.size}`);
 
     for (const note of notes) {
       if (!isCallNote(note)) continue;
       const duration = getCallDuration(note);
-      if (duration <= LONG_CALL_SECONDS) continue;
-      if (notified.has(String(note.id))) continue;
+      console.log(`📞 Звонок ID=${note.id}, type=${note.type}, note_type=${note.note_type}, duration=${duration}с`);
+      
+      if (duration <= LONG_CALL_SECONDS) {
+        console.log(`⏭️ Звонок ${note.id} короче 8 мин, пропускаем`);
+        continue;
+      }
+      
+      if (notified.has(String(note.id))) {
+        console.log(`✅ Звонок ${note.id} уже уведомлён (найден маркер), пропускаем`);
+        continue;
+      }
 
+      console.log(`🚨 Звонок ${note.id} (${duration}с) — ОТПРАВЛЯЕМ В BITRIX!`);
+      
       const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
       const when = new Date((note.created_at || 0) * 1000)
         .toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
-      // Bitrix IM понимает BBCode, а не HTML
+      // 🆕 ПРОСТОЙ ТЕКСТ БЕЗ BBCODE
       const text =
-        `📞 [B]Длинный звонок в amoCRM[/B]\n` +
-        `🔗 Сделка: [URL=https://${env.AMO_DOMAIN}/leads/detail/${leadId}]#${leadId}[/URL]\n` +
-        `⏱ Длительность: [B]${formatDuration(duration)}[/B]\n` +
-        `📞 Тип: ${incoming ? "Входящий" : "Исходящий"}\n` +
-        `🕐 Время: ${when}\n` +
-        `⚠️ Звонок превышает 8 минут!`;
+        `📞 Длинный звонок в amoCRM\n` +
+        `Сделка: ${leadId}\n` +
+        `Длительность: ${formatDuration(duration)}\n` +
+        `Время: ${when}`;
 
-      if (!(await sendToBitrix(text, env))) continue;
+      if (!(await sendToBitrix(text, env))) {
+        console.log(`❌ Не удалось отправить в Bitrix, маркер не добавляем`);
+        continue;
+      }
 
-      notified.add(String(note.id));
+      // 🆕 ДОБАВЛЯЕМ МАРКЕР С ПРОВЕРКОЙ ОТВЕТА
+      const markerText = `${CALL_MARKER} [call:${note.id}]`;
+      console.log(`📝 Добавляем маркер: "${markerText}"`);
+      
       const markRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify([{ note_type: 4, params: { text: `${CALL_MARKER} [call:${note.id}]` } }])
+        body: JSON.stringify([{ note_type: "common", params: { text: markerText } }])
       });
-      console.log(`✅ Звонок ${note.id} (${duration}с), сделка ${leadId}; маркер: HTTP ${markRes.status}`);
+      
+      const markText = await markRes.text();
+      console.log(`✅ Маркер добавлен: HTTP ${markRes.status}, ответ: ${markText.substring(0, 300)}`);
+      
+      if (!markRes.ok) {
+        console.log(`❌ ОШИБКА: маркер НЕ добавлен! Статус: ${markRes.status}`);
+      }
     }
   } catch (e) {
     console.log(`❌ checkLongCallsAndNotify: ${e.message}`);
@@ -338,7 +357,7 @@ export default {
         
         if (noteType === '4' || noteType === '10' || noteType === '109' || noteType === '11' || noteType === '12' || noteType === '13') {
           ctx.waitUntil(addCartTagIfPresent(elementId, noteText, env));
-          ctx.waitUntil(checkLongCallsAndNotify(elementId, env)); // 🆕 ПРОВЕРКА ЗВОНКОВ
+          ctx.waitUntil(checkLongCallsAndNotify(elementId, env));
           if (hasPaymentKeyword(noteText)) {
             ctx.waitUntil(updatePaymentMethodFromNote(elementId, noteText, elementType, env));
           }
@@ -348,7 +367,7 @@ export default {
 
       if (hasUpdate) {
         const leadId = Number(params.get("leads[update][0][id]"));
-        ctx.waitUntil(checkLongCallsAndNotify(leadId, env)); // 🆕 ПРОВЕРКА ЗВОНКОВ
+        ctx.waitUntil(checkLongCallsAndNotify(leadId, env));
         
         const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}?with=custom_fields_values`, { headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" } });
         if (!leadRes.ok) return new Response("OK");
