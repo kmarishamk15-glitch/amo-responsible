@@ -247,38 +247,44 @@ async function sendToBitrix(text, env, chatId) {
   return true;
 }
 
-// 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ИМЕНИ ИЗ ПРИМЕЧАНИЯ ЗВОНКА
+// 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ: сначала ищем ID создателя звонка (это самый точный способ!)
 function extractEmployeeNameFromNote(note) {
-  // Текст примечания может быть в разных местах
+  // 1. Самый надежный способ: ID пользователя, создавшего примечание (совершившего звонок)
+  const creatorId = note.created_by;
+  if (creatorId && RESPONSIBLE_USER_NAMES[creatorId]) {
+    console.log(`✅ Найдено имя по created_by (${creatorId}): ${RESPONSIBLE_USER_NAMES[creatorId]}`);
+    return RESPONSIBLE_USER_NAMES[creatorId];
+  }
+
+  // 2. Если нет, пробуем обновившего
+  const updaterId = note.updated_by;
+  if (updaterId && RESPONSIBLE_USER_NAMES[updaterId]) {
+    console.log(`✅ Найдено имя по updated_by (${updaterId}): ${RESPONSIBLE_USER_NAMES[updaterId]}`);
+    return RESPONSIBLE_USER_NAMES[updaterId];
+  }
+
+  // 3. Текстовый парсинг (на случай, если ID нет, но текст есть)
   const noteText = note.params?.text || note.text || "";
-  
-  // Логируем для отладки (чтобы видеть реальный формат)
   console.log(`📝 Текст примечания звонка: "${noteText.substring(0, 200)}"`);
   
-  const isIncoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
-  
+  const isIncoming = String(note.note_type).toLowerCase() === "12" || String(note.type).toLowerCase() === "call_in";
   let employeeName = null;
   
   if (isIncoming) {
-    // Входящий: ищем "кому: [Имя Фамилия]"
-    // Формат: "кому: Иван Михайлович" или "кому: Иван Михайлович\n" или "кому: Иван Михайлович 00:08:20"
     const match = noteText.match(/кому:\s*([А-Яа-яЁё]+(?:\s+[А-Яа-яЁё]+)*)/i);
-    if (match) {
-      employeeName = match[1].trim();
-      // Проверяем, что это действительно имя (не номер телефона)
-      if (/^\+?\d/.test(employeeName)) employeeName = null;
-    }
+    if (match && !/^\+?\d/.test(match[1].trim())) employeeName = match[1].trim();
   } else {
-    // Исходящий: ищем "от: [Имя Фамилия] кому:"
     const match = noteText.match(/от:\s*([А-Яа-яЁё]+(?:\s+[А-Яа-яЁё]+)*)\s+кому:/i);
-    if (match) {
-      employeeName = match[1].trim();
-      if (/^\+?\d/.test(employeeName)) employeeName = null;
-    }
+    if (match && !/^\+?\d/.test(match[1].trim())) employeeName = match[1].trim();
   }
   
-  console.log(`👤 Извлечённое имя из примечания: ${employeeName || '(не найдено)'}`);
-  return employeeName;
+  if (employeeName) {
+    console.log(`✅ Извлечённое имя из текста: ${employeeName}`);
+    return employeeName;
+  }
+
+  console.log(`⚠️ Имя в примечании не найдено`);
+  return null;
 }
 
 async function getResponsibleName(leadId, env) {
@@ -333,13 +339,12 @@ async function checkLongCallsAndNotify(leadId, env) {
       // 🆕 ГИБРИДНОЕ ИЗВЛЕЧЕНИЕ ИМЕНИ
       let employeeName = extractEmployeeNameFromNote(note);
       
-      // Если не нашли в примечании — берём ответственного по сделке
+      // Если не нашли в примечании — берём ответственного по сделке (как крайняя мера)
       if (!employeeName) {
         console.log(`⚠️ Имя не найдено в примечании, берём ответственного по сделке`);
         employeeName = await getResponsibleName(leadId, env);
       }
       
-      // Если всё равно не нашли
       if (!employeeName) {
         employeeName = "Неизвестный сотрудник";
       }
