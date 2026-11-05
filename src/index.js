@@ -49,7 +49,8 @@ const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_IDS = [19181];
+// 🆕 Вернули основные чаты. (Если нужен тестовый, просто добавь 19181 через запятую)
+const BITRIX_CHAT_IDS = [19127, 3521]; 
 const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 
 const recentChecks = new Map();
@@ -247,23 +248,19 @@ async function sendToBitrix(text, env, chatId) {
   return true;
 }
 
-// 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ: сначала ищем ID создателя звонка (это самый точный способ!)
 function extractEmployeeNameFromNote(note) {
-  // 1. Самый надежный способ: ID пользователя, создавшего примечание (совершившего звонок)
   const creatorId = note.created_by;
   if (creatorId && RESPONSIBLE_USER_NAMES[creatorId]) {
     console.log(`✅ Найдено имя по created_by (${creatorId}): ${RESPONSIBLE_USER_NAMES[creatorId]}`);
     return RESPONSIBLE_USER_NAMES[creatorId];
   }
 
-  // 2. Если нет, пробуем обновившего
   const updaterId = note.updated_by;
   if (updaterId && RESPONSIBLE_USER_NAMES[updaterId]) {
     console.log(`✅ Найдено имя по updated_by (${updaterId}): ${RESPONSIBLE_USER_NAMES[updaterId]}`);
     return RESPONSIBLE_USER_NAMES[updaterId];
   }
 
-  // 3. Текстовый парсинг (на случай, если ID нет, но текст есть)
   const noteText = note.params?.text || note.text || "";
   console.log(`📝 Текст примечания звонка: "${noteText.substring(0, 200)}"`);
   
@@ -336,17 +333,18 @@ async function checkLongCallsAndNotify(leadId, env) {
       if (notified.has(String(note.id)) || inFlightCalls.has(note.id)) continue;
       inFlightCalls.add(note.id);
 
-      // 🆕 ГИБРИДНОЕ ИЗВЛЕЧЕНИЕ ИМЕНИ
       let employeeName = extractEmployeeNameFromNote(note);
       
-      // Если не нашли в примечании — берём ответственного по сделке (как крайняя мера)
       if (!employeeName) {
-        console.log(`⚠️ Имя не найдено в примечании, берём ответственного по сделке`);
+        console.log(`⚠️ Имя не найдено в примечании, пробуем взять ответственного по сделке`);
         employeeName = await getResponsibleName(leadId, env);
       }
       
+      // 🆕 ГЛАВНОЕ ИЗМЕНЕНИЕ: Если сотрудника так и не удалось определить, НЕ отправляем уведомление
       if (!employeeName) {
-        employeeName = "Неизвестный сотрудник";
+        console.log(`⏭️ Сотрудник не распознан, уведомление НЕ отправляется (звонок ${note.id})`);
+        inFlightCalls.delete(note.id);
+        continue;
       }
 
       const when = new Date((note.created_at || 0) * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
@@ -559,7 +557,6 @@ export default {
         patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
       }
 
-      
       const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
       if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
 
