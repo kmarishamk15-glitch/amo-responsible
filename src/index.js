@@ -9,7 +9,7 @@ const RESPONSIBLE_USER_NAMES = {
   13284018: "Марк Артыков", 13465774: "Илья Буланов", 13249770: "Павел Николаев",
   13349558: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
   14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина",
-  14407370: "Иван Михайлович", 14402594: "Анастасия Панова"
+  14407370: "Иван Михайлович", 14402594: "Анастасия Панова", 8817649: "Иван Михайлович"
 };
 
 const CORRECTION_FIELD_NAMES = {
@@ -48,9 +48,8 @@ const ALLOWED_OLD_TYPES = [931809, 938373, 957159];
 const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
-// 🆕 МАССИВ ID ЧАТОВ ДЛЯ РАССЫЛКИ
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_IDS = [19127, 3521]; 
+const BITRIX_CHAT_IDS = [19181]; // 🆕 Только тестовый чат
 const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 
 const recentChecks = new Map();
@@ -233,7 +232,6 @@ function isCallNote(note) {
          String(note.type ?? "").toLowerCase().includes("call");
 }
 
-// 🆕 Функция теперь принимает chatId как аргумент
 async function sendToBitrix(text, env, chatId) {
   const base = env.BITRIX_WEBHOOK_URL.replace(/\/+$/, "");
   const res = await fetch(`${base}/im.message.add.json`, {
@@ -280,35 +278,52 @@ async function checkLongCallsAndNotify(leadId, env) {
       if (notified.has(String(note.id)) || inFlightCalls.has(note.id)) continue;
       inFlightCalls.add(note.id);
 
-      let responsibleName = "Неизвестный сотрудник";
-      try {
-        const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-          headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-        });
-        if (leadRes.ok) {
-          const leadData = await safeJsonParse(leadRes);
-          const respId = leadData?.responsible_user_id;
-          if (respId && RESPONSIBLE_USER_NAMES[respId]) {
-            responsibleName = RESPONSIBLE_USER_NAMES[respId];
-          } else if (respId) {
-            responsibleName = `Сотрудник (ID: ${respId})`;
-          }
-        }
-      } catch (e) {
-        console.log(`⚠️ Не удалось получить ответственного: ${e.message}`);
+      const noteText = note.params?.text || note.text || "";
+      const isIncoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
+      
+      let employeeName = null;
+      
+      // 1. Пробуем извлечь имя из текста примечания
+      if (isIncoming) {
+        const match = noteText.match(/кому:\s*([А-Яа-яЁё\s]+?)(?:\s|$|\+|http)/i);
+        if (match) employeeName = match[1].trim();
+      } else {
+        const match = noteText.match(/от:\s*([А-Яа-яЁё\s]+?)\s+кому:/i);
+        if (match) employeeName = match[1].trim();
       }
 
-      const incoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
+      // 2. Если не нашли — берём ответственного по сделке
+      if (!employeeName) {
+        try {
+          const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+            headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+          });
+          if (leadRes.ok) {
+            const leadData = await safeJsonParse(leadRes);
+            const respId = leadData?.responsible_user_id;
+            if (respId && RESPONSIBLE_USER_NAMES[respId]) {
+              employeeName = RESPONSIBLE_USER_NAMES[respId];
+            }
+          }
+        } catch (e) {
+          console.log(`⚠️ Не удалось получить ответственного: ${e.message}`);
+        }
+      }
+
+      // 3. Если всё равно не нашли — показываем заглушку
+      if (!employeeName) {
+        employeeName = "Неизвестный сотрудник";
+      }
+
       const when = new Date((note.created_at || 0) * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
 
       const text =
         `📞 Длинный звонок в amoCRM\n` +
         `https://${env.AMO_DOMAIN}/leads/detail/${leadId}\n` +
-        `${responsibleName}\n` +
+        `${employeeName}\n` +
         `Длительность: ${formatDuration(duration)}\n` +
         `Время: ${when}`;
 
-      // 🆕 Отправляем во ВСЕ чаты из массива
       let allSent = true;
       for (const chatId of BITRIX_CHAT_IDS) {
         if (!(await sendToBitrix(text, env, chatId))) {
@@ -316,7 +331,6 @@ async function checkLongCallsAndNotify(leadId, env) {
         }
       }
 
-      // Маркер добавляем только если сообщение успешно ушло во все чаты
       if (allSent) {
         const markerText = `${CALL_MARKER} [call:${note.id}]`;
         await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}/notes`, {
@@ -325,7 +339,6 @@ async function checkLongCallsAndNotify(leadId, env) {
           body: JSON.stringify([{ note_type: "common", params: { text: markerText } }])
         });
       } else {
-        // Если хотя бы один чат не принял сообщение, снимаем блокировку для повторной попытки
         inFlightCalls.delete(note.id);
       }
     }
