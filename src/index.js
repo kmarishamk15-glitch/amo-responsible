@@ -49,7 +49,7 @@ const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
 const LONG_CALL_SECONDS = 480;
-const BITRIX_CHAT_IDS = [19181]; // 🆕 Только тестовый чат
+const BITRIX_CHAT_IDS = [19181];
 const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 
 const recentChecks = new Map();
@@ -247,6 +247,58 @@ async function sendToBitrix(text, env, chatId) {
   return true;
 }
 
+// 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ ИМЕНИ ИЗ ПРИМЕЧАНИЯ ЗВОНКА
+function extractEmployeeNameFromNote(note) {
+  // Текст примечания может быть в разных местах
+  const noteText = note.params?.text || note.text || "";
+  
+  // Логируем для отладки (чтобы видеть реальный формат)
+  console.log(`📝 Текст примечания звонка: "${noteText.substring(0, 200)}"`);
+  
+  const isIncoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
+  
+  let employeeName = null;
+  
+  if (isIncoming) {
+    // Входящий: ищем "кому: [Имя Фамилия]"
+    // Формат: "кому: Иван Михайлович" или "кому: Иван Михайлович\n" или "кому: Иван Михайлович 00:08:20"
+    const match = noteText.match(/кому:\s*([А-Яа-яЁё]+(?:\s+[А-Яа-яЁё]+)*)/i);
+    if (match) {
+      employeeName = match[1].trim();
+      // Проверяем, что это действительно имя (не номер телефона)
+      if (/^\+?\d/.test(employeeName)) employeeName = null;
+    }
+  } else {
+    // Исходящий: ищем "от: [Имя Фамилия] кому:"
+    const match = noteText.match(/от:\s*([А-Яа-яЁё]+(?:\s+[А-Яа-яЁё]+)*)\s+кому:/i);
+    if (match) {
+      employeeName = match[1].trim();
+      if (/^\+?\d/.test(employeeName)) employeeName = null;
+    }
+  }
+  
+  console.log(`👤 Извлечённое имя из примечания: ${employeeName || '(не найдено)'}`);
+  return employeeName;
+}
+
+async function getResponsibleName(leadId, env) {
+  try {
+    const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
+      headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
+    });
+    if (leadRes.ok) {
+      const leadData = await safeJsonParse(leadRes);
+      const respId = leadData?.responsible_user_id;
+      if (respId && RESPONSIBLE_USER_NAMES[respId]) {
+        return RESPONSIBLE_USER_NAMES[respId];
+      }
+    }
+  } catch (e) {
+    console.log(`⚠️ Не удалось получить ответственного: ${e.message}`);
+  }
+  return null;
+}
+
 async function checkLongCallsAndNotify(leadId, env) {
   const now = Date.now();
   if (now - (recentChecks.get(leadId) || 0) < 20000) return;
@@ -278,39 +330,16 @@ async function checkLongCallsAndNotify(leadId, env) {
       if (notified.has(String(note.id)) || inFlightCalls.has(note.id)) continue;
       inFlightCalls.add(note.id);
 
-      const noteText = note.params?.text || note.text || "";
-      const isIncoming = String(note.type || "").toLowerCase() === "call_in" || String(note.note_type) === "12";
+      // 🆕 ГИБРИДНОЕ ИЗВЛЕЧЕНИЕ ИМЕНИ
+      let employeeName = extractEmployeeNameFromNote(note);
       
-      let employeeName = null;
-      
-      // 1. Пробуем извлечь имя из текста примечания
-      if (isIncoming) {
-        const match = noteText.match(/кому:\s*([А-Яа-яЁё\s]+?)(?:\s|$|\+|http)/i);
-        if (match) employeeName = match[1].trim();
-      } else {
-        const match = noteText.match(/от:\s*([А-Яа-яЁё\s]+?)\s+кому:/i);
-        if (match) employeeName = match[1].trim();
-      }
-
-      // 2. Если не нашли — берём ответственного по сделке
+      // Если не нашли в примечании — берём ответственного по сделке
       if (!employeeName) {
-        try {
-          const leadRes = await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-            headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, Accept: "application/json" }
-          });
-          if (leadRes.ok) {
-            const leadData = await safeJsonParse(leadRes);
-            const respId = leadData?.responsible_user_id;
-            if (respId && RESPONSIBLE_USER_NAMES[respId]) {
-              employeeName = RESPONSIBLE_USER_NAMES[respId];
-            }
-          }
-        } catch (e) {
-          console.log(`⚠️ Не удалось получить ответственного: ${e.message}`);
-        }
+        console.log(`⚠️ Имя не найдено в примечании, берём ответственного по сделке`);
+        employeeName = await getResponsibleName(leadId, env);
       }
-
-      // 3. Если всё равно не нашли — показываем заглушку
+      
+      // Если всё равно не нашли
       if (!employeeName) {
         employeeName = "Неизвестный сотрудник";
       }
