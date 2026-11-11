@@ -49,7 +49,6 @@ const NEW_TYPE_VALUE = 931811;
 const FIELD_PAYMENT_METHOD = 574905;
 
 const LONG_CALL_SECONDS = 480;
-// 🆕 Вернули основные чаты. (Если нужен тестовый, просто добавь 19181 через запятую)
 const BITRIX_CHAT_IDS = [19127, 3521]; 
 const CALL_MARKER = "Длинный звонок (>8 мин) — уведомление отправлено в Bitrix";
 
@@ -158,19 +157,34 @@ function getBudgetUpdates(lead, fields, promo) {
   return { custom_fields_values, newPrice };
 }
 
+// 🆕 ОБНОВЛЕННАЯ ЛОГИКА ОБРАБОТКИ ПРИЧИН ОТКАЗА
 function processStatus143Logic(fields) {
   const custom_fields_values = [];
   let requestTypeId = null, rejectionReasonId = null;
+  
   for (const field of fields) {
     if (!field.values?.length) continue;
     if (field.field_id === 466253) requestTypeId = field.values[0].enum_id;
     if (field.field_id === 573457) rejectionReasonId = field.values[0].enum_id;
   }
+
+  // 🆕 ПРАВИЛО: Запрет нецелевых/гарантийных причин для реальных запросов на покупку
+  const isSalesRequest = [931809, 938373, 957159].includes(requestTypeId);
+  const forbiddenReasons = [970329, 970313, 976779, 977497];
+
+  if (isSalesRequest && forbiddenReasons.includes(rejectionReasonId)) {
+    // Очищаем поле причины отказа (в amoCRM v4 это делается через values: null)
+    custom_fields_values.push({ field_id: 573457, values: null });
+    console.log(`🧹 Очищена некорректная причина отказа (${rejectionReasonId}) для типа запроса ${requestTypeId}`);
+  }
+
+  // Старые правила (автоматическая подстановка причин для нецелевых/гарантийных)
   if (requestTypeId === 978137 && rejectionReasonId !== 970329 && rejectionReasonId !== 976779 && rejectionReasonId !== 977497) {
     custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970329 }] });
   } else if (requestTypeId === 931811 && rejectionReasonId !== 970313) {
     custom_fields_values.push({ field_id: 573457, values: [{ enum_id: 970313 }] });
   }
+
   return custom_fields_values;
 }
 
@@ -340,7 +354,6 @@ async function checkLongCallsAndNotify(leadId, env) {
         employeeName = await getResponsibleName(leadId, env);
       }
       
-      // 🆕 ГЛАВНОЕ ИЗМЕНЕНИЕ: Если сотрудника так и не удалось определить, НЕ отправляем уведомление
       if (!employeeName) {
         console.log(`⏭️ Сотрудник не распознан, уведомление НЕ отправляется (звонок ${note.id})`);
         inFlightCalls.delete(note.id);
