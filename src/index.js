@@ -10,7 +10,8 @@ const RESPONSIBLE_USER_NAMES = {
   13349558: "Светлана Маливанова", 13536034: "Артем Сяднев", 7561366: "Ирина Яровицина",
   14030758: "Александра Наумова", 14075570: "Ярослава Демина", 14212262: "Александра Потехина",
   14407370: "Иван Михайлович", 14402594: "Анастасия Панова", 8817649: "Иван Михайлович",
-  14437058: "Никита Фролов" // 🆕 НОВЫЙ СОТРУДНИК
+  14437058: "Никита Фролов",
+  14467434: "Жуман Базаров" // 🆕 НОВЫЙ СОТРУДНИК
 };
 
 const CORRECTION_FIELD_NAMES = {
@@ -20,7 +21,8 @@ const CORRECTION_FIELD_NAMES = {
   983519: "Ирина Яровицина", 983521: "Александра Наумова", 983523: "Ярослава Демина",
   983525: "Даниил Бровкин", 983527: "Михаил Кострюков", 983923: "Александра Потехина",
   984301: "Иван Михайлович", 984299: "Анастасия Панова",
-  984309: "Никита Фролов" // 🆕 НОВЫЙ СОТРУДНИК
+  984309: "Никита Фролов",
+  984563: "Жуман Базаров" // 🆕 НОВЫЙ СОТРУДНИК
 };
 
 const DISCOUNT_NONE = 972987;
@@ -510,80 +512,4 @@ export default {
         if (!field.values?.length) continue;
         if (field.field_id === 466253) type = field.values[0].enum_id;
         if (field.field_id === 577689) model = field.values[0].enum_id;
-        if (field.field_id === 575965) currentCategory = field.values[0].enum_id;
-      }
-
-      const patchPayload = {};
-      const customFieldsUpdates = [];
-
-      if (pipelineId === 5276629 && (newStatusId === 142 || newStatusId === 53410258)) {
-        customFieldsUpdates.push({ field_id: 573457, values: null });
-      }
-
-      if (pipelineId === 5276629 && newStatusId === 142) {
-        if (!leadData.name || !leadData.name.toLowerCase().includes("исключение")) {
-          const effectiveCategory = deriveCategory(type, model, currentCategory);
-          let targetRequestType = null;
-          if (effectiveCategory) {
-            if ([974775, 974777, 974779, 982623].includes(effectiveCategory)) targetRequestType = 931809;
-            else if (effectiveCategory === 974781) targetRequestType = 938373;
-            else if (effectiveCategory === 974783) targetRequestType = 957159;
-          }
-          if (targetRequestType) customFieldsUpdates.push({ field_id: 466253, values: [{ enum_id: targetRequestType }] });
-          const promo = isPromo(leadData.name);
-          const budgetUpdates = getBudgetUpdates(leadData, fields, promo);
-          customFieldsUpdates.push(...budgetUpdates.custom_fields_values);
-          if (budgetUpdates.newPrice != null) patchPayload.price = budgetUpdates.newPrice;
-        }
-      }
-
-      if (pipelineId === 5276629 && newStatusId === 143) {
-        customFieldsUpdates.push(...processStatus143Logic(fields));
-        customFieldsUpdates.push({ field_id: 573459, values: null });
-        customFieldsUpdates.push({ field_id: 578879, values: null });
-        patchPayload.price = 0;
-      }
-
-      const matchedRule = RULES.find(rule =>
-        rule.from.pipeline === oldPipelineId && rule.from.status === oldStatusId &&
-        rule.to.pipeline === pipelineId && rule.to.status.includes(newStatusId)
-      );
-
-      if (matchedRule) {
-        if (userId && actualResponsibleId !== userId) {
-          patchPayload.responsible_user_id = userId;
-        }
-        if (newStatusId === 143 && type) {
-          let targetPipeline = null;
-          if (type === 938315) targetPipeline = 5240944;
-          else if (type === 982245) targetPipeline = 5240944;
-          else if (type === 978137) targetPipeline = 5276629;
-          else if (type === 931811) targetPipeline = 5276629;
-
-          if (targetPipeline && targetPipeline !== pipelineId) {
-            patchPayload.pipeline_id = targetPipeline;
-            patchPayload.status_id = 143;
-          }
-        }
-      }
-
-      if (oldPipelineId === 5240944 && oldStatusId === 47069740 && pipelineId === 5276629 && [47054479, 53410254, 53780378, 53410258, 142].includes(newStatusId)) {
-        patchPayload.created_at = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
-      }
-
-      const correctionUpdate = getCorrectionUpdate(fields, actualResponsibleId);
-      if (correctionUpdate) customFieldsUpdates.push(correctionUpdate);
-
-      if (Object.keys(patchPayload).length > 0 || customFieldsUpdates.length > 0) {
-        if (customFieldsUpdates.length > 0) patchPayload.custom_fields_values = customFieldsUpdates;
-        await fetch(`https://${env.AMO_DOMAIN}/api/v4/leads/${leadId}`, {
-          method: "PATCH", headers: { Authorization: `Bearer ${env.AMO_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(patchPayload)
-        });
-      }
-      return new Response("OK");
-    } catch (e) {
-      return new Response("OK"); 
-    }
-  }
-};
+        if (field.field
